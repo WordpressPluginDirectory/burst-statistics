@@ -5,15 +5,14 @@ Tags: statistics, analytics, privacy, analytics alternative
 Requires at least: 5.8
 License: GPL2
 Requires PHP: 7.2
-Tested up to: 6.5
-Stable tag: 1.6.1
+Tested up to: 6.6
+Stable tag: 1.7.0
 
-Self-hosted and privacy-friendly analytics for WordPress.
+Self-hosted, privacy-friendly stats for WordPress. Simple interface, no setup. Get detailed analytics with Burst Statistics.
 
 == Description ==
-
 = Unlock the Power of Privacy-Friendly Analytics with Burst Statistics! =
-Burst Statistics keeps all data on your server, making it compatible with privacy laws. Our dashboards offer clear and concise insights, allowing you to make informed decisions without feeling overwhelmed by abundant data. Choose Burst Statistics for seamless and reliable analytics trusted by over 100,000 users.
+Self-hosted, privacy-friendly WordPress stats with Burst Statistics! Our dashboards offer clear and concise insights, allowing you to make informed decisions without feeling overwhelmed by abundant data. Choose Burst Statistics for seamless and reliable analytics trusted by over 200,000 users.
 
 **This plugin is free and does not require an account.**
 
@@ -24,6 +23,7 @@ Burst Statistics keeps all data on your server, making it compatible with privac
 * **Track Your Goals:** Easily track your custom goals and keep track of conversions.
 * **Free Support:** Feel free to reach out to us for assistance. We would be happy to help in any way we can.
 * **Simplicity:** User-friendly analytics that does not overwhelm you with data.
+* **Email Reporting:** Receive regular email reports on your website’s stats.
 
 = Here’s a review from one of our users: =
 >“On-premise Analytics is a great, if not the best, alternative to Google Analytics in the GDPR era. On top of that, since it’s native to WordPress, it’s so easy to configure Goals, etc. That’s awesome.”
@@ -40,12 +40,15 @@ Our team is always working on improving our plugin, and your input as a user can
 = Get even more insight with Burst Pro =
 Unlock comprehensive insights into your website’s user behavior with Burst Pro. Benefit from advanced features designed to improve performance, boost engagement, and drive conversions. [Elevate your data analysis experience by upgrading to Burst Pro today.](https://burst-statistics.com/pricing/)
 
-Burst Pro Features Include:
-* Geo-Tracking: Identify the countries your visitors are coming from.
-* Data Archiving: Automatic archiving and manual restore options.
-* Multiple Goals: Track multiple objectives to measure your site’s success.
-* More metrics: Get more insights into your website’s performance.
-* Premium Support: Premium Support from our fantastic team.
+Burst Pro Features include:
+
+* **Geo-Tracking:** Identify the countries your visitors are coming from.
+* **Data Archiving:** Automatic archiving and manual restore options.
+* **Multiple Goals:** Track multiple objectives to measure your site’s success.
+* **More metrics:** Get more insights into your website’s performance.
+* **Premium Support:** Premium Support from our fantastic team.
+* **URL Parameter Tracking:** Monitor the effectiveness of your URL parameters.
+* **UTM Campaign Tracking:** Track the performance of your marketing campaigns.
 
 For upcoming features, please [visit our roadmap on our website.](https://burst-statistics.com/development-roadmap/)
 
@@ -87,6 +90,23 @@ Performance is almost not affected. We have built Burst to be very performant fo
 We value your feedback. You can [submit a support request on the WordPress forums](https://wordpress.org/support/plugin/burst-statistics/), and we will respond promptly.
 
 == Change log ==
+= 1.7.0 =
+* Fix: Not every cron job was cleared on deactivation, props @nerokin.
+* Fix: Fixed issue where the timezone would not be set correctly in the insights chart.
+* Fix: Optimizer mu plugin would not be deleted on uninstall. This has been resolved.
+* Fix: Searching pages would sometimes not work. This has been resolved.
+* Fix: Single Page Applications can now be tracked properly. This was not working correctly before.
+* Feature: Track WordPress hooks as a goal! This will allow you to track WooCommerce orders, form submissions, and more. Predefined goals for large plugins are available and will grow over time.
+* Improvement: Moved Burst to have it's own main menu item, so people can navigate to the dashboard more easily.
+* Improvement: Send the beacon information as JSON instead of text/plain. This will prevent false positives in security software.
+* Improvement: Tracking now works with Speculation Rules API. This will cause the tracking to be more accurate, when using speculation rules.
+* Improvement: Added a notice for when the cron does not work properly. This will help users to know when the cron is not working.
+* Improvement: For high traffic websites, we have made the displaying of data more efficient. This will improve the performance of the dashboard for both high and low traffic websites.
+* Improvement: Translatability has been improved by adding %s to the translation strings. This will allow for better translations in languages that have different word orders.
+* Improvement: When the numbers in the compare tab are formatted a tooltip will show the full number. This will help users to see the full number when the number is too large to display.
+* Improvement: Post meta will be tracked more accurately. This will help users to see the correct amount of pageviews for each post.
+* Improvement: Added lookup tables for devices, browsers, and operating systems. This will keep the database size smaller and improve the performance of the dashboard.
+
 = 1.6.1 =
 * Feature: Email reporting. You can now receive a weekly or monthly email with your website statistics. Add up to 10 email addresses to receive the report.
 * Feature: Reset statistics. You can now reset your statistics to start fresh. This will remove all data from the database. Settings will remain the same.
