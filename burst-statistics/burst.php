@@ -3,7 +3,7 @@
  * Plugin Name: Burst Statistics - Privacy-Friendly Analytics for WordPress
  * Plugin URI: https://www.wordpress.org/plugins/burst-statistics
  * Description: Get detailed insights into visitors’ behavior with Burst Statistics, the privacy-friendly analytics dashboard.
- * Version: 1.7.2
+ * Version: 1.7.3
  * Requires at least: 5.8
  * Requires PHP: 7.2
  * Text Domain: burst-statistics
@@ -101,7 +101,7 @@ if ( ! class_exists( 'BURST' ) ) {
 			$burst_plugin = implode( '/', $burst_plugin );
 			define( 'burst_plugin_folder', $burst_plugin );
 			$debug = ( defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ) ? '#'.time() : '';
-			define( 'burst_version', '1.7.2' . $debug );
+			define( 'burst_version', '1.7.3' . $debug );
 			define( 'burst_plugin_file', __FILE__ );
 			define( 'burst_main_menu_position', 100 );
 			define( 'burst_pro_url', 'https://burst-statistics.com/pricing/?src=burst-plugin' );
@@ -180,22 +180,23 @@ if ( ! function_exists( 'BURST' ) ) {
 	add_action( 'plugins_loaded', 'BURST', 8 );
 }
 
-if ( ! function_exists( 'burst_set_defaults' ) ) {
-	/**
-	 * Set an activation time stamp
-	 *
-	 * @param $networkwide
-	 */
-	function burst_set_defaults( $networkwide ) {
-		do_action( 'burst_activation' );
-		if (!function_exists('burst_add_view_capability')) {
-			require_once( plugin_dir_path( __FILE__ ) . 'functions.php' );
-		}
-		burst_add_view_capability();
-		burst_add_manage_capability();
-		update_option('burst_set_defaults', true, false);
-	}
-	register_activation_hook( __FILE__, 'burst_set_defaults' );
+if ( ! function_exists( 'burst_on_activation' ) ) {
+    /**
+     * Set an activation time stamp
+     *
+     * @param $networkwide
+     */
+    function burst_on_activation() {
+        if (!function_exists('burst_add_view_capability')) {
+            require_once( plugin_dir_path( __FILE__ ) . 'functions.php' );
+        }
+        burst_add_view_capability();
+        burst_add_manage_capability();
+        update_option( 'burst_run_activation', true, false );
+        update_option('burst_set_defaults', true, false);
+    }
+
+    register_activation_hook( __FILE__, 'burst_on_activation' );
 }
 
 if ( ! function_exists( 'burst_clear_scheduled_hooks' ) ) {
