@@ -16,11 +16,10 @@ if ( ! class_exists( 'summary' ) ) {
 		/**
 		 * Summary constructor.
 		 */
-		public function __construct() {
+		public function init(): void {
 			add_action( 'burst_every_hour', [ $this, 'update_summary_table_today' ] );
 			add_action( 'burst_weekly', [ $this, 'update_is_high_traffic' ] );
 			add_filter( 'burst_do_action', [ $this, 'refresh_data' ], 10, 3 );
-			add_filter( 'burst_tasks', [ $this, 'add_cron_warning' ] );
 
 			if ( defined( 'BURST_RESTART_SUMMARY_UPGRADE' ) && BURST_RESTART_SUMMARY_UPGRADE ) {
 				$this->restart_update_summary_table_alltime();
@@ -28,30 +27,6 @@ if ( ! class_exists( 'summary' ) ) {
 		}
 
 
-		/**
-		 * Add warning about cron
-		 *
-		 * @return array<int, array<string, mixed>>
-		 */
-		public function add_cron_warning( array $warnings ): array {
-			if ( ! self::is_high_traffic() ) {
-				return $warnings;
-			}
-
-			$warnings[] = [
-				'id'          => 'cron',
-				'condition'   => [
-					'type'     => 'serverside',
-					'function' => '!(new Burst\Admin\Statistics\Summary() )->cron_active()',
-				],
-				'msg'         => __( 'Because your cron has not been triggered more than 24 hours, Burst has stopped using the summary tables, which allow the dashboard to load faster.', 'burst-statistics' ),
-				'icon'        => 'warning',
-				'url'         => 'instructions/cron-error/',
-				'dismissible' => true,
-			];
-
-			return $warnings;
-		}
 
 		/**
 		 * Refresh the summary data
@@ -161,7 +136,7 @@ if ( ! class_exists( 'summary' ) ) {
 			$end_of_last_month   = strtotime( 'last day of last month 23:59:59' );
 			$sql                 = $wpdb->prepare( "select count(*) from {$wpdb->prefix}burst_statistics where time>=%s and time<=%s", $start_of_last_month, $end_of_last_month );
 			$count               = (int) $wpdb->get_var( $sql );
-			$is_high_traffic     = $count > apply_filters( 'burst_high_traffic_treshold', 100000 );
+			$is_high_traffic     = $count > apply_filters( 'burst_high_traffic_treshold', 200000 );
 			update_option( 'burst_is_high_traffic_site', $is_high_traffic, false );
 		}
 
@@ -342,10 +317,10 @@ if ( ! class_exists( 'summary' ) ) {
 			$date_end = Statistics::convert_date_to_unix( $today . ' 23:59:59' );
 			// get today's date.
 			// get the summary from the statistics table.
-			$select_sql = \Burst\burst_loader()->admin->statistics->get_sql_table_raw(
-				$date_start,
-				$date_end,
-				[
+			$args       = [
+				'date_start' => $date_start,
+				'date_end'   => $date_end,
+				'select'     => [
 					'pageviews',
 					'visitors',
 					'first_time_visitors',
@@ -354,9 +329,11 @@ if ( ! class_exists( 'summary' ) ) {
 					'sessions',
 					'avg_time_on_page',
 				],
-				[],
-				'page_url'
-			);
+				'filters'    => [],
+				'group_by'   => 'page_url',
+			];
+			$qd         = new Query_Data( $args );
+			$select_sql = \Burst\burst_loader()->admin->statistics->get_sql_table( $qd );
 			// if this is the update for yesterday or before, mark it as completed.
 			$completed  = $days_offset !== 0 ? 1 : 0;
 			$update_sql = $wpdb->prepare(
@@ -381,7 +358,7 @@ if ( ! class_exists( 'summary' ) ) {
 							    pageviews = source.pageviews,
 							    visitors = source.visitors,
 							    first_time_visitors = COALESCE(source.first_time_visitors, 0),
-							    bounces = source.bounces,
+							    bounces = COALESCE(source.bounces, 0),
 							    avg_time_on_page = source.avg_time_on_page,
 							    completed = completed;",
 				$today,
@@ -390,18 +367,21 @@ if ( ! class_exists( 'summary' ) ) {
 			$wpdb->query( $update_sql );
 
 			// we also create the day total for this day.
-			$select_sql = \Burst\burst_loader()->admin->statistics->get_sql_table_raw(
-				$date_start,
-				$date_end,
-				[
+			$args       = [
+				'date_start' => $date_start,
+				'date_end'   => $date_end,
+				'select'     => [
 					'pageviews',
 					'visitors',
 					'first_time_visitors',
 					'bounces',
 					'sessions',
 					'avg_time_on_page',
-				]
-			);
+				],
+				'filters'    => [],
+			];
+			$qd         = new Query_Data( $args );
+			$select_sql = \Burst\burst_loader()->admin->statistics->get_sql_table( $qd );
 			$update_sql = $wpdb->prepare(
 				"INSERT INTO {$wpdb->prefix}burst_summary (date, page_url, sessions, pageviews, visitors, first_time_visitors, bounces, avg_time_on_page, completed)
 							SELECT
@@ -424,7 +404,7 @@ if ( ! class_exists( 'summary' ) ) {
 							    pageviews = source.pageviews,
 							    visitors = source.visitors,
 							    first_time_visitors = COALESCE(source.first_time_visitors, 0),
-							    bounces = source.bounces,
+							    bounces = COALESCE(source.bounces, 0),
 							    avg_time_on_page = COALESCE(source.avg_time_on_page, 0),
 							    completed = completed;",
 				$today,

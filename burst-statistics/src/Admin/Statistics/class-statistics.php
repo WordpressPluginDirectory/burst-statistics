@@ -5,6 +5,8 @@ use Burst\Frontend\Tracking\Tracking;
 use Burst\Traits\Admin_Helper;
 use Burst\Traits\Database_Helper;
 use Burst\Traits\Helper;
+use Burst\Traits\Sanitize;
+use Peast\Query;
 
 defined( 'ABSPATH' ) || die();
 
@@ -12,14 +14,16 @@ class Statistics {
 	use Helper;
 	use Admin_Helper;
 	use Database_Helper;
+	use Sanitize;
 
 	private array $look_up_table_names = [];
-	private $use_lookup_tables         = null;
 	private $exclude_bounces           = null;
+
+	public $campaign_parameters = [ 'source', 'medium', 'campaign', 'term', 'content' ];
 	/**
 	 * Constructor
 	 */
-	public function __construct() {
+	public function init(): void {
 		add_action( 'burst_install_tables', [ $this, 'install_statistics_table' ], 10 );
 		add_action( 'burst_daily', [ $this, 'update_page_visit_counts' ] );
 		add_action( 'burst_upgrade_post_meta', [ $this, 'update_page_visit_counts' ] );
@@ -71,8 +75,16 @@ class Statistics {
 		$date_start = self::convert_date_to_unix( $yesterday . ' 00:00:00' );
 		// get end of $yesterday in unix.
 		$date_end = self::convert_date_to_unix( $yesterday . ' 23:59:59' );
-
-		$sql = $this->get_sql_table( $date_start, $date_end, [ 'page_url', 'pageviews' ], [], 'page_url', 'pageviews DESC' );
+		$qd       = new Query_Data(
+			[
+				'date_start' => $date_start,
+				'date_end'   => $date_end,
+				'select'     => [ 'page_url', 'pageviews' ],
+				'group_by'   => 'page_url',
+				'order_by'   => 'pageviews DESC',
+			]
+		);
+		$sql      = $this->get_sql_table( $qd );
 		// add offset.
 		$sql .= " LIMIT $chunk OFFSET $offset";
 
@@ -100,114 +112,26 @@ class Statistics {
 	}
 
 	/**
-	 * Compare provided a metric with our defined list, return default count if not existing
-	 */
-	public function sanitize_metric( string $metric ): string {
-		$defaults = $this->get_metrics();
-
-		if ( isset( $defaults[ $metric ] ) ) {
-			return $metric;
-		}
-
-		return 'visitors';
-	}
-
-	/**
-	 * Sanitize a filter set by removing invalid entries and escaping SQL input.
-	 *
-	 * @return array<string, string>
-	 */
-	public function sanitize_filters( array $filters ): array {
-		// Filter out false or empty values.
-		$filters = array_filter(
-			$filters,
-			static function ( $item ) {
-				return $item !== false && $item !== '';
-			}
-		);
-
-		// Sanitize keys and values.
-		$out = [];
-		foreach ( $filters as $key => $value ) {
-			$out[ esc_sql( $key ) ] = esc_sql( $value );
-		}
-
-		return $out;
-	}
-
-	/**
-	 * Compare provided metrics with the defined list, and remove any that do not exist.
-	 *
-	 * @param array<int, string> $metrics List of requested metric keys.
-	 * @return array<int, string> Filtered list of valid metric keys.
-	 */
-	public function sanitize_metrics( array $metrics ): array {
-		$defaults = $this->get_metrics();
-		foreach ( $metrics as $metric => $value ) {
-			if ( ! isset( $defaults[ $value ] ) ) {
-				unset( $metrics[ $metric ] );
-			}
-		}
-
-		return $metrics;
-	}
-
-	/**
-	 * Get array of metrics.
-	 *
-	 * @return array<string, string> Associative array of metric keys and their human-readable labels.
-	 */
-	public function get_metrics(): array {
-		return apply_filters(
-			'burst_metrics',
-			[
-				'page_url'            => __( 'Page URL', 'burst-statistics' ),
-				'referrer'            => __( 'Referrer', 'burst-statistics' ),
-				'pageviews'           => __( 'Pageviews', 'burst-statistics' ),
-				'sessions'            => __( 'Sessions', 'burst-statistics' ),
-				'visitors'            => __( 'Visitors', 'burst-statistics' ),
-				'avg_time_on_page'    => __( 'Time on page', 'burst-statistics' ),
-				'first_time_visitors' => __( 'New visitors', 'burst-statistics' ),
-				'conversions'         => __( 'Conversions', 'burst-statistics' ),
-				'bounces'             => __( 'Bounces', 'burst-statistics' ),
-				'bounce_rate'         => __( 'Bounce rate', 'burst-statistics' ),
-			]
-		);
-	}
-
-	/**
-	 * Sanitize an interval string
-	 */
-	public function sanitize_interval( string $metric ): string {
-		$array = [
-			'hour',
-			'day',
-			'week',
-			'month',
-		];
-		if ( in_array( $metric, $array, true ) ) {
-			return $metric;
-		}
-
-		return 'day';
-	}
-
-	/**
 	 * Get the live visitors count
 	 */
 	public function get_live_visitors_data(): int {
-		global $wpdb;
-
-		// get real time visitors.
-		$db_name        = $wpdb->prefix . 'burst_statistics';
 		$time_start     = strtotime( '10 minutes ago' );
 		$now            = time();
 		$on_page_offset = apply_filters( 'burst_on_page_offset', 60 );
-		$sql            = "SELECT count(DISTINCT(uid))
-                    FROM $db_name
-                        WHERE time > $time_start
-                        AND ( (time + time_on_page / 1000  + $on_page_offset) > $now)";
-		$live_value     = $wpdb->get_var( $sql );
+
+		// Use enhanced query builder with custom WHERE for complex live visitor logic.
+		$args = [
+			'date_start'    => $time_start,
+			// Add buffer to ensure we don't exclude based on end time.
+			'date_end'      => $now + 3600,
+			'custom_select' => 'COUNT(DISTINCT(uid))',
+			'custom_where'  => "AND ( (time + time_on_page / 1000 + {$on_page_offset}) > {$now})",
+		];
+		$qd   = new Query_Data( $args );
+		$sql  = $this->get_sql_table( $qd );
+
+		global $wpdb;
+		$live_value = $wpdb->get_var( $sql );
 
 		// check if the plugin was activated in the last hour. If so, this could be a call coming from the onboarding.
 
@@ -219,7 +143,7 @@ class Statistics {
 	 *
 	 * @param array $args {
 	 *     Optional. Date range for today's stats.
-	 * @type int $date_start Start of today (timestamp).
+	 *     @type int $date_start Start of today (timestamp).
 	 *     @type int $date_end   End of today (timestamp).
 	 * }
 	 * @return array{
@@ -280,7 +204,14 @@ class Statistics {
 		];
 
 		// Query today's data.
-		$sql     = $this->get_sql_table( $start, $end, [ 'visitors', 'pageviews', 'avg_time_on_page' ] );
+		$qd      = new Query_Data(
+			[
+				'date_start' => $start,
+				'date_end'   => $end,
+				'select'     => [ 'visitors', 'pageviews', 'avg_time_on_page' ] ,
+			]
+		);
+		$sql     = $this->get_sql_table( $qd );
 		$results = $wpdb->get_row( $sql, 'ARRAY_A' );
 		if ( $results ) {
 			$data['today']['value']      = max( 0, (int) $results['visitors'] );
@@ -295,7 +226,17 @@ class Statistics {
 				'referrer'   => [ 'referrer', 'pageviews' ],
 			] as $key => $fields
 		) {
-			$sql   = $this->get_sql_table( $start, $end, $fields, [], $fields[0], 'pageviews DESC', 1 );
+			$qd    = new Query_Data(
+				[
+					'date_start' => $start,
+					'date_end'   => $end,
+					'select'     => $fields,
+					'group_by'   => $fields[0],
+					'order_by'   => 'pageviews DESC',
+					'limit'      => 1,
+				]
+			);
+			$sql   = $this->get_sql_table( $qd );
 			$query = $wpdb->get_row( $sql, 'ARRAY_A' );
 			if ( $query ) {
 				$data[ $key ]['title'] = $query[ $fields[0] ];
@@ -400,7 +341,7 @@ class Statistics {
 		];
 		$args          = wp_parse_args( $args, $defaults );
 		$metrics       = $this->sanitize_metrics( $args['metrics'] );
-		$metric_labels = $this->get_metrics();
+		$metric_labels = $this->allowed_metrics();
 		$filters       = $this->sanitize_filters( (array) $args['filters'] );
 
 		// generate labels for dataset.
@@ -440,9 +381,20 @@ class Statistics {
 		}
 
 		$select = $this->sanitize_metrics( $metrics );
-
-		$sql  = $this->get_sql_table( $date_start, $date_end, $select, $filters, 'period', 'period', 0, [], $date_modifiers );
-		$hits = $wpdb->get_results( $sql, ARRAY_A );
+		$qd     = new Query_Data(
+			[
+				'date_start'     => $date_start,
+				'date_end'       => $date_end,
+				'select'         => $select,
+				'filters'        => $filters,
+				'group_by'       => 'period',
+				'order_by'       => 'period',
+				'limit'          => 0,
+				'date_modifiers' => $date_modifiers,
+			]
+		);
+		$sql    = $this->get_sql_table( $qd );
+		$hits   = $wpdb->get_results( $sql, ARRAY_A );
 
 		// match data from db to labels.
 		foreach ( $hits as $hit ) {
@@ -501,60 +453,48 @@ class Statistics {
 	 * }
 	 */
 	public function get_compare_data( array $args = [] ): array {
-		$defaults = [
-			'date_start' => 0,
-			'date_end'   => 0,
-			'filters'    => [],
-		];
-		$args     = wp_parse_args( $args, $defaults );
+		return $this->get_base_data(
+			[
+				'args'             => $args,
+				'needs_comparison' => true,
+				'queries'          => [
+					'main_data' => [
+						'type'       => 'standard',
+						'select'     => [ 'visitors', 'pageviews', 'sessions', 'first_time_visitors', 'avg_time_on_page', 'bounce_rate' ],
+						'comparison' => true,
+					],
+					'bounces'   => [
+						'type'       => 'bounces',
+						'comparison' => true,
+					],
+				],
+				'formatters'       => [
+					function ( $results ) {
+						$main_data = $results['main_data'];
+						$bounces   = $results['bounces'];
 
-		$start = (int) $args['date_start'];
-		$end   = (int) $args['date_end'];
-
-		if ( isset( $args['compare_date_start'] ) && isset( $args['compare_date_end'] ) ) {
-			$start_diff = (int) $args['compare_date_start'];
-			$end_diff   = (int) $args['compare_date_end'];
-		} else {
-			$diff       = $end - $start;
-			$start_diff = $start - $diff;
-			$end_diff   = $end - $diff;
-		}
-
-		$filters = $this->sanitize_filters( (array) $args['filters'] );
-
-		$select = [ 'visitors', 'pageviews', 'sessions', 'first_time_visitors', 'avg_time_on_page', 'bounce_rate' ];
-
-		// current data.
-		$current = $this->get_data( $select, $start, $end, $filters );
-
-		// previous data.
-		$previous = $this->get_data( $select, $start_diff, $end_diff, $filters );
-
-		// bounces.
-		$curr_bounces = $this->get_bounces( $start, $end, $filters );
-		$prev_bounces = $this->get_bounces( $start_diff, $end_diff, $filters );
-
-		// combine data.
-		$data = [
-			'current'  => [
-				'pageviews'           => (int) $current['pageviews'],
-				'sessions'            => (int) $current['sessions'],
-				'visitors'            => (int) $current['visitors'],
-				'first_time_visitors' => (int) $current['first_time_visitors'],
-				'avg_time_on_page'    => (int) $current['avg_time_on_page'],
-				'bounced_sessions'    => $curr_bounces,
-				'bounce_rate'         => $current['bounce_rate'],
-			],
-			'previous' => [
-				'pageviews'        => (int) $previous['pageviews'],
-				'sessions'         => (int) $previous['sessions'],
-				'visitors'         => (int) $previous['visitors'],
-				'bounced_sessions' => $prev_bounces,
-				'bounce_rate'      => $previous['bounce_rate'],
-			],
-		];
-
-		return $data;
+						return [
+							'current'  => [
+								'pageviews'           => (int) $main_data['current']['pageviews'],
+								'sessions'            => (int) $main_data['current']['sessions'],
+								'visitors'            => (int) $main_data['current']['visitors'],
+								'first_time_visitors' => (int) $main_data['current']['first_time_visitors'],
+								'avg_time_on_page'    => (int) $main_data['current']['avg_time_on_page'],
+								'bounced_sessions'    => $bounces['current'],
+								'bounce_rate'         => $main_data['current']['bounce_rate'],
+							],
+							'previous' => [
+								'pageviews'        => (int) $main_data['previous']['pageviews'],
+								'sessions'         => (int) $main_data['previous']['sessions'],
+								'visitors'         => (int) $main_data['previous']['visitors'],
+								'bounced_sessions' => $bounces['previous'],
+								'bounce_rate'      => $main_data['previous']['bounce_rate'],
+							],
+						];
+					},
+				],
+			]
+		);
 	}
 
 	/**
@@ -586,59 +526,88 @@ class Statistics {
 	 * }
 	 */
 	public function get_compare_goals_data( array $args = [] ): array {
-		$defaults = [
-			'date_start' => 0,
-			'date_end'   => 0,
-			'filters'    => [],
-		];
-		$args     = wp_parse_args( $args, $defaults );
+		return $this->get_base_data(
+			[
+				'args'             => $args,
+				'needs_comparison' => true,
+				'queries'          => [
+					'main_data'   => [
+						'type'       => 'standard',
+						'select'     => [ 'pageviews', 'visitors', 'sessions', 'first_time_visitors' ],
+						'comparison' => true,
+						// Will be processed to remove goal_id.
+						'filters'    => [],
+					],
+					'conversions' => [
+						'type'       => 'conversions',
+						'comparison' => true,
+					],
+				],
+				'processors'       => [
+					function ( $results, $args ) {
+						// Remove goal_id from filters for main data query.
+						$filters              = $this->sanitize_filters( (array) $args['filters'] );
+						$filters_without_goal = $filters;
+						unset( $filters_without_goal['goal_id'] );
 
-		$start      = (int) $args['date_start'];
-		$end        = (int) $args['date_end'];
-		$diff       = $end - $start;
-		$start_diff = $start - $diff;
-		$end_diff   = $end - $diff;
-		$filters    = $this->sanitize_filters( (array) $args['filters'] );
+						// Re-execute main data query with correct filters.
+						$start            = (int) $args['date_start'];
+						$end              = (int) $args['date_end'];
+						$comparison_dates = $this->calculate_comparison_dates( $start, $end, $args );
 
-		$filters_without_goal = $filters;
-		unset( $filters_without_goal['goal_id'] );
+						$results['main_data']['current'] = $this->get_data(
+							[ 'pageviews', 'visitors', 'sessions', 'first_time_visitors' ],
+							$start,
+							$end,
+							$filters_without_goal
+						);
 
-		$select = [ 'pageviews', 'visitors', 'sessions', 'first_time_visitors' ];
-		// current data.
-		$current = $this->get_data( $select, $start, $end, $filters_without_goal );
+						$results['main_data']['previous'] = $this->get_data(
+							[ 'pageviews', 'sessions', 'visitors' ],
+							$comparison_dates['start'],
+							$comparison_dates['end'],
+							$filters_without_goal
+						);
 
-		$select = [ 'pageviews', 'sessions', 'visitors' ];
-		// previous data.
-		$previous = $this->get_data( $select, $start_diff, $end_diff, $filters_without_goal );
+						return $results;
+					},
+				],
+				'formatters'       => [
+					function ( $results ) {
+						$main_data   = $results['main_data'];
+						$conversions = $results['conversions'];
 
-		// get amount of conversions for current period.
-		$current_conversions  = $this->get_conversions( $start, $end, $filters );
-		$previous_conversions = $this->get_conversions( $start_diff, $end_diff, $filters );
+						$current_conversion_rate  = $this->calculate_conversion_rate(
+							$conversions['current'],
+							(int) $main_data['current']['pageviews']
+						);
+						$previous_conversion_rate = $this->calculate_conversion_rate(
+							$conversions['previous'],
+							(int) $main_data['previous']['pageviews']
+						);
 
-		$current_conversion_rate  = $this->calculate_conversion_rate( $current_conversions, (int) $current['pageviews'] );
-		$previous_conversion_rate = $this->calculate_conversion_rate( $previous_conversions, (int) $previous['pageviews'] );
-
-		// combine data.
-		$data = [
-			'view'     => 'goals',
-			'current'  => [
-				'pageviews'           => (int) $current['pageviews'],
-				'visitors'            => (int) $current['visitors'],
-				'sessions'            => (int) $current['sessions'],
-				'first_time_visitors' => (int) $current['first_time_visitors'],
-				'conversions'         => $current_conversions,
-				'conversion_rate'     => $current_conversion_rate,
-			],
-			'previous' => [
-				'pageviews'       => (int) $previous['pageviews'],
-				'visitors'        => (int) $previous['visitors'],
-				'sessions'        => (int) $previous['sessions'],
-				'conversions'     => $previous_conversions,
-				'conversion_rate' => $previous_conversion_rate,
-			],
-		];
-
-		return $data;
+						return [
+							'view'     => 'goals',
+							'current'  => [
+								'pageviews'           => (int) $main_data['current']['pageviews'],
+								'visitors'            => (int) $main_data['current']['visitors'],
+								'sessions'            => (int) $main_data['current']['sessions'],
+								'first_time_visitors' => (int) $main_data['current']['first_time_visitors'],
+								'conversions'         => $conversions['current'],
+								'conversion_rate'     => $current_conversion_rate,
+							],
+							'previous' => [
+								'pageviews'       => (int) $main_data['previous']['pageviews'],
+								'visitors'        => (int) $main_data['previous']['visitors'],
+								'sessions'        => (int) $main_data['previous']['sessions'],
+								'conversions'     => $conversions['previous'],
+								'conversion_rate' => $previous_conversion_rate,
+							],
+						];
+					},
+				],
+			]
+		);
 	}
 
 	/**
@@ -652,7 +621,16 @@ class Statistics {
 	 */
 	public function get_data( array $select, int $start, int $end, array $filters ): array {
 		global $wpdb;
-		$sql    = $this->get_sql_table( $start, $end, $select, $filters );
+		$qd  = new Query_Data(
+			[
+				'date_start' => $start,
+				'date_end'   => $end,
+				'select'     => $select,
+				'filters'    => $filters,
+			]
+		);
+		$sql = $this->get_sql_table( $qd );
+
 		$result = $wpdb->get_results( $sql, 'ARRAY_A' );
 
 		return $result[0] ?? array_fill_keys( $select, 0 );
@@ -663,8 +641,15 @@ class Statistics {
 	 */
 	private function get_bounces( int $start, int $end, array $filters ): int {
 		global $wpdb;
-		$sql = $this->get_sql_table( $start, $end, [ 'bounces' ], $filters );
-
+		$qd  = new Query_Data(
+			[
+				'date_start' => $start,
+				'date_end'   => $end,
+				'select'     => [ 'bounces' ],
+				'filters'    => $filters,
+			]
+		);
+		$sql = $this->get_sql_table( $qd );
 		return (int) $wpdb->get_var( $sql );
 	}
 
@@ -675,7 +660,15 @@ class Statistics {
 		global $wpdb;
 
 		// filter is goal id so pageviews returned are the conversions.
-		$sql = $this->get_sql_table( $start, $end, [ 'conversions' ], $filters );
+		$qd  = new Query_Data(
+			[
+				'date_start' => $start,
+				'date_end'   => $end,
+				'select'     => [ 'conversions' ],
+				'filters'    => $filters,
+			]
+		);
+		$sql = $this->get_sql_table( $qd );
 
 		return (int) $wpdb->get_var( $sql );
 	}
@@ -693,90 +686,49 @@ class Statistics {
 	 * @return array<string, array{count: int}> Associative array of device names and counts.
 	 */
 	public function get_devices_title_and_value_data( array $args = [] ): array {
-		global $wpdb;
-		$defaults     = [
+		$defaults = [
 			'date_start' => 0,
 			'date_end'   => 0,
 			'filters'    => [],
 		];
-		$args         = wp_parse_args( $args, $defaults );
-		$start        = (int) $args['date_start'];
-		$end          = (int) $args['date_end'];
-		$filters      = $this->sanitize_filters( (array) $args['filters'] );
-		$goal_id      = $filters['goal_id'] ?? null;
-		$country_code = $filters['country_code'] ?? null;
+		$args     = wp_parse_args( $args, $defaults );
 
-		// Conditional JOIN and WHERE based on the presence of goal_id.
-		$join_clause = '';
-		// if string is not '' then add 'AND' to the string.
-		$where_clause = $this->get_where_clause_for_filters( $filters );
-		if ( $goal_id !== null ) {
-			$join_clause = "INNER JOIN {$wpdb->prefix}burst_goal_statistics AS goals ON statistics.ID = goals.statistic_id";
-			// append to where clause.
-			$where_clause .= $wpdb->prepare( ' AND goals.goal_id = %d ', $goal_id );
-		}
-		if ( $country_code !== null ) {
-			$join_clause  .= " INNER JOIN {$wpdb->prefix}burst_sessions AS sessions ON statistics.session_id = sessions.ID ";
-			$where_clause .= $wpdb->prepare( ' AND sessions.country_code = %s ', $country_code );
-		}
-		$use_lookup_tables = $this->use_lookup_tables();
-		if ( $use_lookup_tables ) {
-			// prepare replacement in variable.
-            //phpcs:ignore
-			$sql = $wpdb->prepare(
-				"SELECT device_id, COUNT(device_id) AS count
-                    FROM (
-                        SELECT statistics.device_id 
-                        FROM {$wpdb->prefix}burst_statistics AS statistics
-                        $join_clause
-                        WHERE time > %s
-                        AND time < %s 
-                        AND device_id > 0 
-                        $where_clause
-                    ) AS statistics
-                    GROUP BY device_id;",
-				$start,
-				$end,
-				$goal_id
-			);
-		} else {
-			// replacement in variable.
-            //phpcs:ignore
-			$sql = $wpdb->prepare(
-				"SELECT device, COUNT(device) AS count
-                    FROM (
-                        SELECT statistics.device 
-                        FROM {$wpdb->prefix}burst_statistics AS statistics
-                        $join_clause
-                        WHERE time > %s
-                        AND time < %s 
-                        AND device IS NOT NULL 
-                        AND device <> ''
-                        $where_clause
-                    ) AS statistics
-                    GROUP BY device;",
-				$start,
-				$end,
-				$goal_id
-			);
-		}
+		$query_args = [
+			'date_start' => $args['date_start'],
+			'date_end'   => $args['date_end'],
+			'filters'    => $args['filters'],
+		];
 
+		$query_args['select']        = [ 'device_id' ];
+		$query_args['custom_select'] = 'device_id, COUNT(device_id) AS count';
+		$query_args['group_by']      = 'device_id';
+		$query_args['having']        = [ 'device_id > 0' ];
+
+		$qd  = new Query_Data( $query_args );
+		$sql = $this->get_sql_table( $qd );
+
+		global $wpdb;
 		$devices_result = $wpdb->get_results( $sql, ARRAY_A );
 
 		$total   = 0;
 		$devices = [];
-		foreach ( $devices_result as $key => $data ) {
-			$name             = $use_lookup_tables ? $this->get_lookup_table_name_by_id( 'device', $data['device_id'] ) : $data['device'];
-			$devices[ $name ] = [
-				'count' => $data['count'],
-			];
-			$total           += $data['count'];
+
+		foreach ( $devices_result as $data ) {
+			$name = $this->get_lookup_table_name_by_id( 'device', $data['device_id'] );
+
+			if ( ! empty( $name ) ) {
+				$devices[ $name ] = [
+					'count' => (int) $data['count'],
+				];
+				$total           += (int) $data['count'];
+			}
 		}
+
 		$devices['all'] = [
 			'count' => $total,
 		];
 
-		// setup defaults.
+		// Setup defaults.
 		$default_data = [
 			'all'     => [
 				'count' => 0,
@@ -815,76 +767,47 @@ class Statistics {
 	 * }
 	 */
 	public function get_devices_subtitle_data( array $args = [] ): array {
-		global $wpdb;
-		$defaults     = [
+		$defaults = [
 			'date_start' => 0,
 			'date_end'   => 0,
 			'filters'    => [],
 		];
-		$args         = wp_parse_args( $args, $defaults );
-		$start        = (int) $args['date_start'];
-		$end          = (int) $args['date_end'];
-		$devices      = [ 'desktop', 'tablet', 'mobile', 'other' ];
-		$filters      = $this->sanitize_filters( (array) $args['filters'] );
-		$goal_id      = $filters['goal_id'] ?? null;
-		$country_code = $filters['country_code'] ?? '';
+		$args     = wp_parse_args( $args, $defaults );
 
-		// if string is not '' then add 'AND' to the string.
-		$where_clause = $this->get_where_clause_for_filters( $filters );
-		$data         = [];
+		$devices = [ 'desktop', 'tablet', 'mobile', 'other' ];
+		$data    = [];
 
-		// Loop through results and add count to array.
-		$use_lookup_tables = $this->use_lookup_tables();
 		foreach ( $devices as $device ) {
+			// Build device-specific query using enhanced builder.
+			$query_args = [
+				'date_start' => $args['date_start'],
+				'date_end'   => $args['date_end'],
+				'filters'    => array_merge( $args['filters'], [ 'device' => $device ] ),
+				'limit'      => 1,
+			];
 
-			$common_sql = " FROM {$wpdb->prefix}burst_statistics AS statistics ";
-			if ( $use_lookup_tables ) {
-				$device_id  = \Burst\burst_loader()->frontend->tracking->get_lookup_table_id_cached( 'device', $device );
-				$device_sql = $wpdb->prepare( ' device_id=%s ', $device_id );
-				$where_sql  = $wpdb->prepare( " WHERE time > %d AND time < %d AND device_id >0 $where_clause", $start, $end );
-			} else {
-				$device_sql = $wpdb->prepare( ' device=%s ', $device );
-				$where_sql  = $wpdb->prepare( " WHERE time > %d AND time < %d AND device IS NOT NULL AND device <> '' $where_clause", $start, $end );
-			}
+			$query_args['select']        = [ 'browser_id', 'platform_id' ];
+			$query_args['custom_select'] = 'browser_id, platform_id, COUNT(*) as count';
+			$query_args['group_by']      = 'browser_id, platform_id';
+			$query_args['having']        = [ 'browser_id > 0' ];
+			$query_args['order_by']      = 'count DESC';
+			$qd                          = new Query_Data( $query_args );
+			$sql                         = $this->get_sql_table( $qd );
 
-			// Conditional JOIN and WHERE based on the presence of goal_id.
-			if ( $goal_id !== null ) {
-				$common_sql .= " INNER JOIN {$wpdb->prefix}burst_goal_statistics AS goals ON statistics.ID = goals.statistic_id ";
-				$where_sql  .= $wpdb->prepare( ' AND goals.goal_id = %d ', $goal_id );
-			}
+			global $wpdb;
+			$results = $wpdb->get_row( $sql, ARRAY_A );
 
-			if ( strlen( $country_code ) > 0 ) {
-				$common_sql .= " INNER JOIN {$wpdb->prefix}burst_sessions AS sessions ON statistics.session_id = sessions.ID ";
-				$where_sql  .= $wpdb->prepare( ' AND sessions.country_code = %s ', $country_code );
-			}
-
-			// Query for browser and OS.
-			if ( $use_lookup_tables ) {
-				// replacement in variable.
-                //phpcs:ignore
-				$sql         = $wpdb->prepare( "SELECT browser_id, platform_id FROM (SELECT browser_id, platform_id, COUNT(*) AS count, device_id $common_sql $where_sql AND browser_id>0 GROUP BY browser_id, platform_id ) AS grouped_devices WHERE $device_sql ORDER BY count DESC LIMIT 1", '' );
-				$results     = $wpdb->get_row( $sql, ARRAY_A );
-				$browser_id  = $results['browser_id'] ?? 0;
-				$platform_id = $results['platform_id'] ?? 0;
-				$browser     = $this->get_lookup_table_name_by_id( 'browser', $browser_id );
-				$platform    = $this->get_lookup_table_name_by_id( 'platform', $platform_id );
-
-			} else {
-				// replacement in variable.
-                //phpcs:ignore
-				$sql      = $wpdb->prepare( "SELECT browser, platform FROM (SELECT browser, platform, COUNT(*) AS count, device $common_sql $where_sql AND browser IS NOT NULL GROUP BY browser, platform ) AS grouped_devices WHERE $device_sql ORDER BY count DESC LIMIT 1", '' );
-				$results  = $wpdb->get_row( $sql, ARRAY_A );
-				$browser  = $results['browser'] ?? false;
-				$platform = $results['platform'] ?? false;
-			}
-
+			$browser_id      = $results['browser_id'] ?? 0;
+			$platform_id     = $results['platform_id'] ?? 0;
+			$browser         = $this->get_lookup_table_name_by_id( 'browser', $browser_id );
+			$platform        = $this->get_lookup_table_name_by_id( 'platform', $platform_id );
 			$data[ $device ] = [
-				'os'      => $platform,
-				'browser' => $browser,
+				'os'      => $platform ?: '',
+				'browser' => $browser ?: '',
 			];
 		}
 
-		// setup defaults.
+		// Setup defaults.
 		$default_data = [
 			'desktop' => [
 				'os'      => '',
@@ -942,7 +865,7 @@ class Statistics {
 		$group_by = $this->sanitize_metrics( $args['group_by'] ?? [] );
 		// group by from array to comma seperated string.
 		$group_by      = implode( ',', $group_by );
-		$metric_labels = $this->get_metrics();
+		$metric_labels = $this->allowed_metrics();
 		$start         = (int) $args['date_start'];
 		$end           = (int) $args['date_end'];
 		$columns       = [];
@@ -971,28 +894,27 @@ class Statistics {
 
 		$last_metric_count = count( $metrics ) - 1;
 		$order_by          = isset( $metrics[ $last_metric_count ] ) ? $metrics[ $last_metric_count ] . ' DESC' : 'pageviews DESC';
+		$qd                = new Query_Data(
+			[
+				'date_start' => $start,
+				'date_end'   => $end,
+				'select'     => $metrics,
+				'filters'    => $filters,
+				'group_by'   => $group_by,
+				'order_by'   => $order_by,
+				'limit'      => $limit,
+			]
+		);
+		$sql               = $this->get_sql_table( $qd );
+		$data              = $wpdb->get_results( $sql, ARRAY_A );
 
-		$sql  = $this->get_sql_table( $start, $end, $metrics, $filters, $group_by, $order_by, $limit );
-		$data = $wpdb->get_results( $sql, ARRAY_A );
-		$data = apply_filters( 'burst_datatable_data', $data, $start, $end, $metrics, $filters, $group_by, $order_by, $limit );
+		$data = apply_filters( 'burst_datatable_data', $data, $qd );
 
 		return [
 			'columns' => $columns,
 			'data'    => $data,
 			'metrics' => $metrics,
 		];
-	}
-
-	/**
-	 * Get the SQL query for referrers
-	 */
-	public function get_referrers_sql( int $start, int $end, array $filters = [] ): string {
-		$remove   = [ 'http://www.', 'https://www.', 'http://', 'https://' ];
-		$site_url = str_replace( $remove, '', site_url() );
-		$sql      = $this->get_sql_table( $start, $end, [ 'count', 'referrer' ], $filters );
-		$sql     .= "AND referrer NOT LIKE '%$site_url%' GROUP BY referrer ORDER BY 1 DESC";
-
-		return $sql;
 	}
 
 	/**
@@ -1029,7 +951,7 @@ class Statistics {
 	}
 
 	/**
-	 * Get the offset in seconds from the selected timezone in WP
+	 * Get the offset in seconds from the selected timezone in WP.
 	 *
 	 * @throws \Exception //exception.
 	 */
@@ -1040,7 +962,7 @@ class Statistics {
 	}
 
 	/**
-	 * Convert unix timestamp to date string by gmt offset
+	 * Convert unix timestamp to date string by gmt offset.
 	 */
 	public static function convert_unix_to_date( int $unix_timestamp ): string {
 		$adjusted_timestamp = $unix_timestamp + self::get_wp_timezone_offset();
@@ -1073,7 +995,7 @@ class Statistics {
 	}
 
 	/**
-	 * Get color for a graph
+	 * Get color for a graph.
 	 */
 	private function get_metric_color(
 		string $metric = 'visitors',
@@ -1136,30 +1058,35 @@ class Statistics {
 		$date_start_diff = $date_start - $time_diff;
 		$date_end_diff   = $date_end - $time_diff;
 
-		$curr_data = $wpdb->get_results(
-			$this->get_sql_table(
-				$date_start,
-				$date_end,
-				[
+		$qd  = new Query_Data(
+			[
+				'date_start' => $date_start,
+				'date_end'   => $date_end,
+				'select'     => [
 					'visitors',
 					'sessions',
 					'pageviews',
 					'avg_time_on_page',
-				]
-			)
+				],
+			]
 		);
-		$prev_data = $wpdb->get_results(
-			$this->get_sql_table(
-				$date_start_diff,
-				$date_end_diff,
-				[
+		$sql = $this->get_sql_table( $qd );
+
+		$curr_data = $wpdb->get_results( $sql );
+		$qd        = new Query_Data(
+			[
+				'date_start' => $date_start_diff,
+				'date_end'   => $date_end_diff,
+				'select'     => [
 					'visitors',
 					'sessions',
 					'pageviews',
 					'avg_time_on_page',
-				]
-			)
+				],
+			]
 		);
+		$sql       = $this->get_sql_table( $qd );
+		$prev_data = $wpdb->get_results( $sql );
 
 		// calculate uplift for visitors.
 		$visitors               = $curr_data[0]->visitors;
@@ -1178,20 +1105,22 @@ class Statistics {
 		$time_per_session_uplift        = $this->format_uplift( $prev_time_per_session, $time_per_session );
 		$time_per_session_uplift_status = $this->calculate_uplift_status( $prev_time_per_session, $time_per_session );
 
-		// get top referrer.
-		$top_referrer = $wpdb->get_results(
-			$this->get_sql_table(
-				$date_start,
-				$date_end,
-				[
+		$qd  = new Query_Data(
+			[
+				'date_start' => $date_start,
+				'date_end'   => $date_end,
+				'select'     => [
 					'pageviews',
 					'referrer',
 				],
-				[ 'referrer' ],
-				'pageviews DESC',
-				'1'
-			)
+				'filters'    => [ 'referrer' ],
+				'group_by'   => 'pageviews DESC',
+				'order_by'   => '1',
+			]
 		);
+		$sql = $this->get_sql_table( $qd );
+		// get top referrer.
+		$top_referrer = $wpdb->get_results( $sql );
 		if ( isset( $top_referrer[0] ) ) {
 			if ( $top_referrer[0]->referrer === 'Direct' ) {
 				$top_referrer[0]->referrer = __( 'Direct', 'burst-statistics' );
@@ -1201,19 +1130,21 @@ class Statistics {
 		}
 
 		// get most visited page.
-		$most_visited = $wpdb->get_results(
-			$this->get_sql_table(
-				$date_start,
-				$date_end,
-				[
+		$qd           = new Query_Data(
+			[
+				'date_start' => $date_start,
+				'date_end'   => $date_end,
+				'select'     => [
 					'pageviews',
 					'page_url',
 				],
-				[ 'page_url' ],
-				'pageviews DESC',
-				'1'
-			)
+				'filters'    => [ 'page_url' ],
+				'group_by'   => 'pageviews DESC',
+				'order_by'   => '1',
+			]
 		);
+		$sql          = $this->get_sql_table( $qd );
+		$most_visited = $wpdb->get_results( $sql );
 		if ( isset( $most_visited[0] ) ) {
 			if ( $most_visited[0]->page_url === '/' ) {
 				$most_visited[0]->page_url = __( 'Homepage', 'burst-statistics' );
@@ -1264,18 +1195,6 @@ class Statistics {
 	}
 
 	/**
-	 * Cached method to check if lookup tables should be used.
-	 */
-	public function use_lookup_tables(): bool {
-
-		if ( $this->use_lookup_tables === null ) {
-			$this->use_lookup_tables = ! get_option( 'burst_db_upgrade_upgrade_lookup_tables' );
-		}
-
-		return $this->use_lookup_tables;
-	}
-
-	/**
 	 * Check if bounces should be excluded from statistics.
 	 */
 	public function exclude_bounces(): bool {
@@ -1288,44 +1207,48 @@ class Statistics {
 	/**
 	 * Generates a WHERE clause for SQL queries based on provided filters.
 	 *
-	 * @param array $filters Associative array of filters.
+	 * @param Query_Data $data Query_Data object.
 	 * @return string WHERE clause for SQL query.
 	 */
-	private function get_where_clause_for_filters( array $filters = [] ): string {
-		$filters       = $this->sanitize_filters( $filters );
+	private function get_where_clause_for_filters( Query_Data $data ): string {
+		$filters       = $this->sanitize_filters( $data->filters );
 		$where_clauses = [];
-
-		$id = $this->use_lookup_tables() ? '_id' : '';
 
 		// Define filters including their table prefixes.
 		$possible_filters_with_prefix = apply_filters(
 			'burst_possible_filters_with_prefix',
 			[
-				'bounce'       => 'statistics.bounce',
-				'page_url'     => 'statistics.page_url',
-				'referrer'     => 'statistics.referrer',
-				'device'       => 'statistics.device' . $id,
-				'browser'      => 'statistics.browser' . $id,
-				'platform'     => 'statistics.platform' . $id,
-				// Assuming 'country_code' filter is in the 'sessions' table.
-				'country_code' => 'sessions.country_code',
-				// allow filtering by goal_id.
-				'goal_id'      => 'goals.goal_id',
+				'bounces'     => 'session_bounces.bounce',
+				'new_visitor' => 'statistics.first_time_visit',
+				'page_url'    => 'statistics.page_url',
+				'referrer'    => 'statistics.referrer',
+				'device'      => 'statistics.device_id',
+				'browser'     => 'statistics.browser_id',
+				'platform'    => 'statistics.platform_id',
+				'platform_id' => 'statistics.platform_id',
+				'browser_id'  => 'statistics.browser_id',
+				'device_id'   => 'statistics.device_id',
+				// only needed for pages datatable.
+				'goal_id'     => 'goals.goal_id',
 			]
 		);
 
-		if ( $this->use_lookup_tables() ) {
-			$mappable = [
+		if ( $this->is_campaign_conversion_query( $data ) || $this->is_referrer_conversion_query( $data ) || $this->is_parameter_conversion_query( $data ) ) {
+			unset( $possible_filters_with_prefix['goal_id'] );
+		}
+
+		$mappable = apply_filters(
+			'burst_mappable_filters',
+			[
 				'browser',
 				'browser_version',
 				'platform',
 				'device',
-			// only device, browser and platform in use at the moment, but leave it here for extension purposes.
-			];
-			foreach ( $filters as $filter_name => $filter_value ) {
-				if ( in_array( $filter_name, $mappable, true ) ) {
-					$filters[ $filter_name ] = \Burst\burst_loader()->frontend->tracking->get_lookup_table_id_cached( $filter_name, $filter_value );
-				}
+			]
+		);
+		foreach ( $filters as $filter_name => $filter_value ) {
+			if ( in_array( $filter_name, $mappable, true ) ) {
+				$filters[ $filter_name ] = \Burst\burst_loader()->frontend->tracking->get_lookup_table_id_cached( $filter_name, $filter_value );
 			}
 		}
 
@@ -1333,8 +1256,18 @@ class Statistics {
 			if ( array_key_exists( $filter, $possible_filters_with_prefix ) ) {
 				$qualified_name = $possible_filters_with_prefix[ $filter ];
 
-				if ( is_numeric( $value ) ) {
+				// Special handling for include/exclude values.
+				if ( $value === 'include' ) {
+					$where_clauses[] = "{$qualified_name} = 1";
+				} elseif ( $value === 'exclude' ) {
+					$where_clauses[] = "{$qualified_name} = 0";
+				} elseif ( is_numeric( $value ) ) {
 					$where_clauses[] = "{$qualified_name} = " . intval( $value );
+				} elseif ( strpos( $value, ',' ) !== false ) {
+					// explode comma separated values.
+					$values          = explode( ',', $value );
+					$values          = array_map( 'intval', $values );
+					$where_clauses[] = "( $qualified_name= " . implode( " OR $qualified_name = ", $values ) . ')';
 				} else {
 					$value = esc_sql( sanitize_text_field( $value ) );
 					if ( $filter === 'referrer' ) {
@@ -1353,106 +1286,6 @@ class Statistics {
 		return ! empty( $where ) ? "AND $where " : '';
 	}
 
-	/**
-	 * Get query for statistics
-	 */
-	public function get_sql_table( int $start, int $end, array $select = [ '*' ], array $filters = [], string $group_by = '', string $order_by = '', int $limit = 0, array $joins = [], array $date_modifiers = [] ): string {
-		$raw = count( $date_modifiers ) > 0 && strpos( $date_modifiers['sql_date_format'], '%H' ) !== false;
-		if ( ! $raw && \Burst\burst_loader()->admin->summary->upgrade_completed() && \Burst\burst_loader()->admin->summary->is_summary_data( $select, $filters, $start, $end ) ) {
-			return \Burst\burst_loader()->admin->summary->summary_sql( $start, $end, $select, $group_by, $order_by, $limit, $date_modifiers );
-		}
-		$sql = $this->get_sql_table_raw( $start, $end, $select, $filters, $group_by, $order_by, $limit, $joins );
-		if ( count( $date_modifiers ) > 0 ) {
-			$timezone_offset = $this->get_mysql_timezone_offset();
-			$sql             = str_replace( 'SELECT', "SELECT DATE_FORMAT(FROM_UNIXTIME( time + $timezone_offset ), '{$date_modifiers['sql_date_format']}') as period,", $sql );
-		}
-
-		return $sql;
-	}
-
-
-	/**
-	 * Function to get the SQL query to exclude bounces from query's
-	 */
-	public function get_sql_table_raw( int $start, int $end, array $select = [ '*' ], array $filters = [], string $group_by = '', string $order_by = '', int $limit = 0, array $joins = [] ): string {
-		global $wpdb;
-		$filters    = esc_sql( $filters );
-		$select     = esc_sql( $select );
-		$group_by   = esc_sql( $group_by );
-		$order_by   = esc_sql( $order_by );
-		$limit      = $limit;
-		$select     = $this->get_sql_select_for_metrics( $select );
-		$table_name = $wpdb->prefix . 'burst_statistics';
-		$where      = $this->get_where_clause_for_filters( $filters );
-
-		// if $select string contains referrer add where clause for referrer.
-		if ( strpos( $select, 'referrer' ) !== false ) {
-			$remove   = [ 'http://www.', 'https://www.', 'http://', 'https://' ];
-			$site_url = str_replace( $remove, '', site_url() );
-			$where   .= "AND referrer NOT LIKE '%$site_url%'";
-		}
-
-		if ( $this->is_pro() && strpos( $select, 'parameters,' ) !== false ) {
-			$where .= "AND parameters IS NOT NULL AND parameters != ''";
-		}
-
-		if ( $this->is_pro() && strpos( $select, 'parameter,' ) !== false ) {
-			$where .= "AND parameter IS NOT NULL AND parameter != '='";
-		}
-
-		$available_joins = apply_filters(
-			'burst_available_joins',
-			[
-				'sessions' => [
-					'table' => 'burst_sessions',
-					'on'    => 'statistics.session_id = sessions.ID',
-					// Optional, default is INNER JOIN.
-					'type'  => 'INNER',
-				],
-				'goals'    => [
-					'table' => 'burst_goal_statistics',
-					'on'    => 'statistics.ID = goals.statistic_id',
-					// Optional, default is INNER JOIN.
-					'type'  => 'LEFT',
-				],
-			]
-		);
-
-		// find possible joins in $select and $where.
-		foreach ( $available_joins as $join => $table ) {
-			if ( strpos( $select, $join . '.' ) !== false || strpos( $where, $join . '.' ) !== false ) {
-				$joins[ $join ] = $table;
-			}
-		}
-
-		$join_sql = '';
-		foreach ( $joins as $key => $join ) {
-			$join_table = $wpdb->prefix . $join['table'];
-			$join_on    = $join['on'];
-			$join_type  = $join['type'] ?? 'INNER';
-			$join_sql  .= " {$join_type} JOIN {$join_table} AS {$key} ON {$join_on}";
-		}
-
-		$table_name .= ' AS statistics';
-
-		// if parameter is in select, then we need to join the parameters table.
-		if ( strpos( $select, 'parameter,' ) !== false ) {
-			// replcae the group by with the parameter.
-			$group_by = 'parameters.parameter, parameters.value';
-			// if parameters is also in the group by then we need to add the parameters table to the join.
-			if ( strpos( $select, 'parameters,' ) !== false ) {
-				// if group by is set then we add a comma and statistics.parameters to the group by. If not then it just becomes statistics.parameters.
-				$group_by = $group_by . ', statistics.parameters';
-			}
-		}
-
-		$group_by  = strlen( $group_by ) > 0 ? "GROUP BY $group_by" : '';
-		$order_by  = strlen( $order_by ) > 0 ? "ORDER BY $order_by" : '';
-		$limit_sql = $limit > 0 ? 'LIMIT ' . $limit : '';
-
-		$sql = "SELECT $select FROM $table_name $join_sql WHERE time > $start AND time < $end $where $group_by $order_by $limit_sql";
-		return $sql;
-	}
 
 	/**
 	 * Generate SQL for a metric
@@ -1465,8 +1298,9 @@ class Statistics {
 		// so we sanitize it and return it.
 		if ( substr( $metric, 0, 6 ) === 'count(' && substr( $metric, - 1 ) === ')' ) {
 			// delete the 'count(' and ')' from the metric.
-			// sanitize_title and wrap it in count().
-			return 'count(' . sanitize_title( substr( $metric, 6, - 1 ) ) . ')';
+			// sanitize and wrap it in count().
+			$metric = $this->sanitize_metric( substr( $metric, 6, - 1 ) );
+			return 'count(' . $metric . ')';
 		}
 		// using COALESCE to prevent NULL values in the output, in the today.
 		switch ( $metric ) {
@@ -1475,10 +1309,10 @@ class Statistics {
 				$sql = $exclude_bounces ? 'COALESCE( SUM( CASE WHEN bounce = 0 THEN 1 ELSE 0 END ), 0)' : 'COUNT( statistics.ID )';
 				break;
 			case 'bounces':
-				$sql = 'COALESCE( SUM( CASE WHEN bounce = 1 THEN 1 ELSE 0 END ), 0)';
+				$sql = 'SUM(session_bounces.bounce) ';
 				break;
 			case 'bounce_rate':
-				$sql = 'SUM( statistics.bounce ) / COUNT( DISTINCT statistics.session_id ) * 100';
+				$sql = 'ROUND(SUM(session_bounces.bounce) / COUNT(DISTINCT statistics.session_id) * 100, 2) ';
 				break;
 			case 'sessions':
 				$sql = $exclude_bounces ? 'COUNT( DISTINCT CASE WHEN bounce = 0 THEN statistics.session_id END )' : 'COUNT( DISTINCT statistics.session_id )';
@@ -1486,8 +1320,13 @@ class Statistics {
 			case 'avg_time_on_page':
 				$sql = $exclude_bounces ? 'COALESCE( AVG( CASE WHEN bounce = 0 THEN statistics.time_on_page END ), 0 )' : 'AVG( statistics.time_on_page )';
 				break;
+			case 'avg_session_duration':
+				$sql = 'CASE WHEN COUNT( DISTINCT statistics.session_id ) > 0 THEN AVG( statistics.time_on_page ) ELSE 0 END';
+				break;
 			case 'first_time_visitors':
-				$sql = $exclude_bounces ? 'COALESCE( SUM( CASE WHEN bounce = 0 THEN statistics.first_time_visit ELSE 0 END ), 0 ) ' : 'SUM( statistics.first_time_visit )';
+				$sql = $exclude_bounces ?
+					'COALESCE( COUNT(DISTINCT CASE WHEN bounce = 0 AND statistics.first_time_visit = 1 THEN statistics.uid END),0)' :
+					'COUNT(DISTINCT CASE WHEN statistics.first_time_visit = 1 THEN statistics.uid END)';
 				break;
 			case 'visitors':
 				$sql = $exclude_bounces ? 'COUNT(DISTINCT CASE WHEN bounce = 0 THEN statistics.uid END)' : 'COUNT(DISTINCT statistics.uid)';
@@ -1508,6 +1347,21 @@ class Statistics {
 				break;
 			case 'conversions':
 				$sql = 'count( goals.goal_id )';
+				break;
+			case 'conversion_rate':
+				$sql = 'LEAST(100, COUNT(goals.goal_id) / COUNT(DISTINCT statistics.session_id) * 100) ';
+				break;
+			// Handle direct field references (non-aggregated fields).
+			case 'device_id':
+			case 'browser_id':
+			case 'platform_id':
+			case 'browser_version_id':
+			case 'device_resolution_id':
+			case 'session_id':
+			case 'time':
+			case 'time_on_page':
+			case 'first_time_visit':
+				$sql = 'statistics.' . $metric;
 				break;
 			default:
 				$sql = apply_filters( 'burst_select_sql_for_metric', $metric );
@@ -1540,9 +1394,28 @@ class Statistics {
 					$metric .= '_count';
 				}
 				$select .= $sql . ' as ' . $metric;
-			} else {
+			} elseif ( $metric === '*' ) {
 				// if it's a wildcard, then we don't need to add the alias.
 				$select .= '*';
+			} else {
+				// Skip empty metrics instead of falling back to *.
+				self::error_log( 'Skipping empty metric: ' . $metric );
+				// Adjust the counter since we're skipping this metric.
+				if ( $count !== $i ) {
+					// Don't add comma if this is the last metric or if next iteration will be the last.
+					$next_metrics_empty = true;
+					for ( $j = $i + 1; $j <= $count; $j++ ) {
+						if ( $this->get_sql_select_for_metric( $metrics[ $j - 1 ] ) !== '' || $metrics[ $j - 1 ] === '*' ) {
+							$next_metrics_empty = false;
+							break;
+						}
+					}
+					if ( ! $next_metrics_empty && $select !== '' ) {
+						$select .= ', ';
+					}
+				}
+				++$i;
+				continue;
 			}
 
 			// if it's not the last metric, then we need to add a comma.
@@ -1669,7 +1542,15 @@ class Statistics {
 		$page_url = get_permalink( $post_id );
 		// strip home_url from page_url.
 		$page_url = str_replace( home_url(), '', $page_url );
-		$sql      = $this->get_sql_table( $date_start, $date_end, [ 'pageviews' ], [ 'page_url' => $page_url ] );
+		$qd       = new Query_Data(
+			[
+				'date_start' => $date_start,
+				'date_end'   => $date_end,
+				'select'     => [ 'pageviews' ],
+				'filters'    => [ 'page_url' => $page_url ],
+			]
+		);
+		$sql      = $this->get_sql_table( $qd );
 		global $wpdb;
 		$data = $wpdb->get_row( $sql );
 		if ( $data && isset( $data->pageviews ) ) {
@@ -1757,6 +1638,11 @@ class Statistics {
         `name` varchar(255) NOT NULL,
         PRIMARY KEY (ID)
     ) $charset_collate;",
+			'burst_referrers'        => "CREATE TABLE {$wpdb->prefix}burst_referrers (
+        `ID` int(11) NOT NULL AUTO_INCREMENT,
+        `name` varchar(255) NOT NULL UNIQUE,
+        PRIMARY KEY (ID)
+    ) $charset_collate;",
 			'burst_summary'          => "CREATE TABLE {$wpdb->prefix}burst_summary (
         `ID` int NOT NULL AUTO_INCREMENT,
         `date` DATE NOT NULL,
@@ -1804,5 +1690,656 @@ class Statistics {
 		foreach ( $indexes as $index ) {
 			$this->add_index( $table_name, $index );
 		}
+	}
+
+	/**
+	 * Enhanced SQL query builder with support for complex queries.
+	 *
+	 * @param Query_Data $qd Query data object containing all necessary parameters.
+	 * @return string Generated SQL query.
+	 */
+	public function get_sql_table( Query_Data $qd ): string {
+
+		// Check if we can use summary tables.
+		$raw = ! empty( $qd->date_modifiers ) && strpos( $qd->date_modifiers['sql_date_format'] ?? '', '%H' ) !== false;
+		if ( ! $raw && $this->can_use_summary_tables( $qd ) ) {
+			return $this->get_summary_sql( $qd );
+		}
+
+		return $this->build_raw_sql( $qd );
+	}
+
+	/**
+	 * Check if we can use summary tables for this query.
+	 */
+	private function can_use_summary_tables( Query_Data $data ): bool {
+		return ! empty( $data->custom_select ) === false &&
+				empty( $data->subquery ) &&
+				empty( $data->union ) &&
+				empty( $data->window ) &&
+				\Burst\burst_loader()->admin->summary->upgrade_completed() &&
+				\Burst\burst_loader()->admin->summary->is_summary_data(
+					$data->select,
+					$data->filters,
+					$data->date_start,
+					$data->date_end
+				);
+	}
+
+	/**
+	 * Check if the query is for campaign conversions.
+	 */
+	public function is_parameter_conversion_query( Query_Data $data ): bool {
+		// Check if the select contains campaign related fields.
+		$goal_or_conversion = in_array( 'conversions', $data->select, true ) || isset( $data->filters['goal_id'] );
+		if ( $goal_or_conversion && in_array( 'parameter', $data->select, true ) ) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Check if the query is for campaign conversions.
+	 */
+	public function is_campaign_conversion_query( Query_Data $data ): bool {
+		// Check if the select contains campaign related fields.
+		$goal_or_conversion = in_array( 'conversion_rate', $data->select, true ) || in_array( 'conversions', $data->select, true ) || isset( $data->filters['goal_id'] );
+		if ( $goal_or_conversion && ! empty( array_intersect( $this->campaign_parameters, $data->select ) ) ) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Check if the query is for referrer conversions.
+	 */
+	private function is_referrer_conversion_query( Query_Data $data ): bool {
+		// Check if the select contains campaign related fields.
+		$goal_or_conversion = in_array( 'conversions', $data->select, true ) || isset( $data->filters['goal_id'] );
+		if ( $goal_or_conversion && in_array( 'referrer', $data->select, true ) ) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Check if the parameter is a campaign parameter.
+	 */
+	private function is_campaign_parameter( string $parameter ): bool {
+		// Check if the parameter is one of the campaign parameters.
+		return in_array( $parameter, $this->campaign_parameters, true );
+	}
+
+	/**
+	 * Build raw SQL query with enhanced features.
+	 */
+	private function build_raw_sql( Query_Data $data ): string {
+		global $wpdb;
+		// Sanitize inputs.
+		$data->select   = array_map( 'esc_sql', $data->select );
+		$data->filters  = $this->sanitize_filters( $data->filters );
+		$data->group_by = esc_sql( $data->group_by );
+		$data->order_by = esc_sql( $data->order_by );
+
+		// Build SELECT clause first to get the actual SQL field references.
+		$select = $this->build_select_clause( $data );
+
+		// Build FROM clause.
+		$table_name = $wpdb->prefix . 'burst_statistics AS statistics';
+
+		// Build JOIN clauses - now that we have the actual SELECT clause.
+		$join_sql  = $this->build_join_clauses( $data, $select );
+		$where     = $this->build_where_clause( $data );
+		$group_by  = $this->build_group_by_clause( $data );
+		$having    = $this->build_having_clause( $data->having );
+		$order_by  = ! empty( $data->order_by ) ? "ORDER BY {$data->order_by}" : '';
+		$limit_sql = $data->limit > 0 ? 'LIMIT ' . $data->limit : '';
+
+		if ( $this->is_parameter_conversion_query( $data ) ) {
+			$table_name = " (
+                SELECT 
+                    p.parameter,
+                    p.value,
+                    s.uid,
+                    MIN(s.time) AS first_visit_time
+                FROM {$wpdb->prefix}burst_parameters AS p
+                JOIN {$wpdb->prefix}burst_statistics AS s ON s.ID = p.statistic_id
+                WHERE s.time > {$data->date_start} AND s.time < {$data->date_end}
+                GROUP BY p.parameter, p.value, s.uid
+            ) AS params ";
+		}
+
+		if ( $this->is_campaign_conversion_query( $data ) ) {
+			// get campaigns parameters from select args.
+			$parameters = [];
+			foreach ( $data->select as $value ) {
+				if ( $this->is_campaign_parameter( $value ) ) {
+					// prepend ca. to the parameter.
+					$parameters[] = 'ca.' . esc_sql( $value );
+				}
+			}
+			$parameter_sql = implode( ', ', $parameters ) . ',';
+
+			// If campaigns are selected, we need to handle the campaigns query.
+			$table_name = " (
+            SELECT
+                s.uid,
+                $parameter_sql
+                MIN(s.time) AS first_visit_time
+              FROM {$wpdb->prefix}burst_campaigns AS ca
+              JOIN {$wpdb->prefix}burst_statistics AS s ON s.ID = ca.statistic_id
+              WHERE s.time > {$data->date_start} AND s.time < {$data->date_end}
+              GROUP BY $parameter_sql s.uid 
+            ) AS campaigns ";
+		}
+
+		// check if this query needs referrer data.
+		if ( $this->is_referrer_conversion_query( $data ) ) {
+			$referrer_sql = str_replace( 'statistics.', 's.', $this->get_sql_select_for_metric( 'referrer' ) );
+			$table_name   = " (
+            SELECT
+                s.uid, 
+                $referrer_sql as referrer,
+                MIN(s.time) AS first_visit_time
+              FROM {$wpdb->prefix}burst_statistics s
+              WHERE s.time > {$data->date_start} AND s.time < {$data->date_end}
+              GROUP BY s.uid
+            ) AS referrers ";
+		}
+
+		// Assemble main query.
+		$sql = "SELECT {$select} FROM {$table_name} {$join_sql} WHERE statistics.time > {$data->date_start} AND statistics.time < {$data->date_end} {$where} {$group_by} {$having} {$order_by} {$limit_sql}";
+
+		// Handle subquery wrapping.
+		if ( ! empty( $data->subquery ) ) {
+			$sql = "SELECT * FROM ({$sql}) AS {$data->subquery}";
+		}
+
+		// Handle UNION.
+		if ( ! empty( $data->union ) ) {
+			foreach ( $data->union as $union_query ) {
+				$sql .= ' UNION ' . $union_query;
+			}
+		}
+		return $sql;
+	}
+
+	/**
+	 * Build SELECT clause with enhanced features.
+	 */
+	private function build_select_clause( Query_Data $data ): string {
+		// Use custom select if provided.
+		if ( ! empty( $data->custom_select ) ) {
+			return $data->custom_select;
+		}
+		$select                = $data->select;
+		$manually_add_referrer = false;
+		if ( $this->is_referrer_conversion_query( $data ) ) {
+			$referrer_index = array_search( 'referrer', $select, true );
+			unset( $select[ $referrer_index ] );
+			$manually_add_referrer = true;
+		}
+
+		$distinct = $data->distinct ? 'DISTINCT ' : '';
+
+		// Handle date modifiers for period grouping.
+		$period_select = '';
+		if ( ! empty( $data->date_modifiers ) ) {
+			$timezone_offset = $this->get_mysql_timezone_offset();
+			$period_select   = "DATE_FORMAT(FROM_UNIXTIME( time + {$timezone_offset} ), '{$data->date_modifiers['sql_date_format']}') as period, ";
+		}
+
+		// Build metrics select.
+		$metrics_select = $this->get_sql_select_for_metrics( $select );
+		if ( $manually_add_referrer ) {
+			$metrics_select = ' referrers.referrer, ' . $metrics_select;
+		}
+		// Handle window functions.
+		$window_select = '';
+		if ( ! empty( $data->window ) ) {
+			$window_functions = [];
+			foreach ( $data->window as $alias => $window_def ) {
+				$window_functions[] = "{$window_def} AS {$alias}";
+			}
+			$window_select = ', ' . implode( ', ', $window_functions );
+		}
+
+		return $distinct . $period_select . $metrics_select . $window_select;
+	}
+
+	/**
+	 * Build enhanced WHERE clause.
+	 */
+	private function build_where_clause( Query_Data $data ): string {
+		$where = $this->get_where_clause_for_filters( $data );
+		// Add referrer filtering if needed.
+		if ( $this->select_contains_referrer( $data->select ) ) {
+			$remove   = [ 'http://www.', 'https://www.', 'http://', 'https://' ];
+			$site_url = str_replace( $remove, '', site_url() );
+			$table    = $this->is_referrer_conversion_query( $data ) ? 'referrers' : 'statistics';
+			$where   .= " AND $table.referrer NOT LIKE '%{$site_url}%'";
+		}
+
+		$where = apply_filters( 'burst_build_where_clause', $where, $data );
+
+		// Add custom WHERE clause if provided.
+		if ( ! empty( $data->custom_where ) ) {
+			$where .= ' ' . $data->custom_where;
+		}
+
+		// Add filters to where.
+		return $where;
+	}
+
+	/**
+	 * Build GROUP BY clause from arguments.
+	 *
+	 * @param Query_Data $data Query arguments containing group_by configuration.
+	 * @return string GROUP BY clause string.
+	 */
+	private function build_group_by_clause( Query_Data $data ): string {
+		if ( ! empty( $data->group_by ) ) {
+			if ( $this->is_campaign_conversion_query( $data ) ) {
+				$group_by_array = explode( ',', $data->group_by );
+				// prepend each group_by with 'campaigns_subquery.' to match the campaigns subquery.
+				$group_by_array = array_map(
+					function ( $item ) {
+						return 'campaigns.' . esc_sql( $item );
+					},
+					$group_by_array
+				);
+				$data->group_by = implode( ', ', $group_by_array );
+			}
+			$group_by_sql = ! empty( $data->group_by ) ? "GROUP BY {$data->group_by}" : '';
+			return esc_sql( $group_by_sql );
+		}
+
+		// If no explicit group_by is provided, return empty string.
+		// Grouping should be explicit, not automatic based on select fields.
+		return '';
+	}
+
+	/**
+	 * Build HAVING clause.
+	 */
+	private function build_having_clause( array $having_conditions ): string {
+		if ( empty( $having_conditions ) ) {
+			return '';
+		}
+
+		$conditions = [];
+		foreach ( $having_conditions as $condition ) {
+			// Ensure condition is a string before escaping.
+			$condition_string = is_array( $condition ) ? implode( ' ', $condition ) : (string) $condition;
+			// Ensure esc_sql result is always a string.
+			$escaped_condition = esc_sql( $condition_string );
+			$conditions[]      = is_array( $escaped_condition ) ? implode( ' ', $escaped_condition ) : $escaped_condition;
+		}
+
+		return 'HAVING ' . implode( ' AND ', $conditions );
+	}
+
+	/**
+	 * Enhanced JOIN building with dependency resolution.
+	 */
+	private function build_join_clauses( Query_Data $data, string $select_clause = '' ): string {
+		global $wpdb;
+		$goal_sql = '';
+		// if we're filtering by goal_id, we need to add it to the join clause. We don't filter in the where clause.
+		if ( isset( $data->filters['goal_id'] ) ) {
+			$goal_sql = ' AND goals.goal_id = ' . (int) $data->filters['goal_id'] . ' ';
+		}
+		$available_joins = apply_filters(
+			'burst_available_joins',
+			[
+				'sessions'        => [
+					'table'      => 'burst_sessions',
+					'on'         => 'statistics.session_id = sessions.ID',
+					'type'       => 'INNER',
+					'depends_on' => [],
+				],
+				'goals'           => [
+					'table'      => 'burst_goal_statistics',
+					'on'         => 'statistics.ID = goals.statistic_id ' . $goal_sql,
+					'type'       => 'LEFT',
+					'depends_on' => [],
+				],
+				// we can have multiple bounces per session, so we need to use a subquery to get the bounce status.
+				'session_bounces' => [
+					'table'      => "( 
+                                          SELECT 
+                                            session_id,
+                                            CASE WHEN COUNT(*) = 1 THEN 1 ELSE 0 END AS bounce
+                                          FROM {$wpdb->prefix}burst_statistics
+                                          WHERE time > {$data->date_start} AND time < {$data->date_end}
+                                          GROUP BY session_id
+                                        )",
+					'on'         => 'statistics.session_id = session_bounces.session_id ',
+					'type'       => 'LEFT',
+					'depends_on' => [],
+				],
+			]
+		);
+
+		// Auto-detect needed joins from select and filters.
+		$needed_joins    = $this->detect_needed_joins( $data, $available_joins, $data->joins, $select_clause );
+		$processed_joins = $this->resolve_join_dependencies( $needed_joins, $available_joins );
+		return $this->build_join_sql( $processed_joins );
+	}
+
+	/**
+	 * Auto-detect joins needed based on select and filters.
+	 *
+	 * @param Query_Data $data           Query arguments.
+	 * @param array      $available_joins Available join configurations.
+	 * @param array      $needed_joins   Reference to array of needed joins to populate.
+	 * @param string     $select_clause  Optional. Built SELECT clause for additional analysis.
+	 */
+	private function detect_needed_joins( Query_Data $data, array $available_joins, array $needed_joins, string $select_clause = '' ): array {
+		$select_string = implode( ' ', $data->select );
+		$where_string  = $this->get_where_clause_for_filters( $data );
+		$custom_select = $data->custom_select ?? '';
+
+		// Include the actual built SELECT clause which contains the real SQL field references.
+		$search_string = $select_string . ' ' . $where_string . ' ' . $custom_select . ' ' . $select_clause . ' ';
+		foreach ( $data->select as $metric ) {
+			$metric_sql     = $this->get_sql_select_for_metric( $metric );
+			$search_string .= ' ' . $metric_sql;
+		}
+
+		foreach ( $available_joins as $join_name => $join_config ) {
+			if ( $this->is_campaign_conversion_query( $data ) ) {
+				if ( $join_name === 'campaigns_conversions' ) {
+					$needed_joins['statistics'] = $join_config;
+				}
+
+				if ( $join_name === 'campaigns' ) {
+					continue;
+				}
+			}
+
+			if ( $this->is_parameter_conversion_query( $data ) ) {
+				if ( $join_name === 'parameter_conversions' ) {
+					$needed_joins['statistics'] = $join_config;
+				}
+
+				if ( $join_name === 'params' ) {
+					continue;
+				}
+			}
+
+			if ( $this->is_referrer_conversion_query( $data ) ) {
+				if ( $join_name === 'referrers_conversions' ) {
+					$needed_joins['statistics'] = $join_config;
+				}
+			}
+			if ( strpos( $search_string, $join_name . '.' ) !== false ) {
+				$needed_joins[ $join_name ] = $join_config;
+			}
+		}
+		return $needed_joins;
+	}
+
+	/**
+	 * Helper methods for select content detection
+	 */
+	private function select_contains_referrer( array $select ): bool {
+		return in_array( 'referrer', $select, true ) ||
+				! empty( array_filter( $select, fn( $s ) => is_string( $s ) && strpos( $s, 'referrer' ) !== false ) );
+	}
+
+	/**
+	 * Helper method to check if select contains parameters.
+	 *
+	 * @param array $select Array of select fields to check.
+	 * @return bool True if parameters are referenced in select.
+	 */
+	public function select_contains_parameters( array $select ): bool {
+		return in_array( 'parameters', $select, true ) ||
+				! empty( array_filter( $select, fn( $s ) => is_string( $s ) && strpos( $s, 'parameter' ) !== false ) );
+	}
+
+	/**
+	 * Resolve JOIN dependencies recursively.
+	 *
+	 * @param array $needed_joins    Array of joins that are needed.
+	 * @param array $available_joins Array of all available join configurations.
+	 * @return array<string, array{table: string, on: string, type?: string, depends_on?: array<int, string>}> Processed joins with dependencies resolved.
+	 */
+	private function resolve_join_dependencies( array $needed_joins, array $available_joins ): array {
+		$processed_joins = [];
+
+		$add_join_with_dependencies = function ( $join_name, $join_info ) use ( &$processed_joins, &$available_joins, &$add_join_with_dependencies ): void {
+			if ( isset( $processed_joins[ $join_name ] ) ) {
+				return;
+			}
+
+			// Process dependencies first.
+			if ( ! empty( $join_info['depends_on'] ) ) {
+				foreach ( $join_info['depends_on'] as $dependency ) {
+					if ( isset( $available_joins[ $dependency ] ) ) {
+						$add_join_with_dependencies( $dependency, $available_joins[ $dependency ] );
+					}
+				}
+			}
+
+			$processed_joins[ $join_name ] = $join_info;
+		};
+
+		foreach ( $needed_joins as $join_name => $join_info ) {
+			$add_join_with_dependencies( $join_name, $join_info );
+		}
+
+		return $processed_joins;
+	}
+
+	/**
+	 * Build the actual JOIN SQL string
+	 */
+	private function build_join_sql( array $processed_joins ): string {
+		global $wpdb;
+
+		$join_sql = '';
+		foreach ( $processed_joins as $alias => $join ) {
+			// if the join is a subquery, no prefix is needed.
+			$join_table = strpos( $join['table'], 'SELECT' ) === false ? $wpdb->prefix . $join['table'] : $join['table'];
+			$join_on    = $join['on'];
+			$join_type  = $join['type'] ?? 'INNER';
+			$join_sql  .= " {$join_type} JOIN {$join_table} AS {$alias} ON {$join_on}";
+		}
+
+		return $join_sql;
+	}
+
+	/**
+	 * Get summary SQL using the enhanced args format
+	 */
+	private function get_summary_sql( Query_Data $data ): string {
+		return \Burst\burst_loader()->admin->summary->summary_sql(
+			$data->date_start,
+			$data->date_end,
+			$data->select,
+			$data->group_by,
+			$data->order_by,
+			$data->limit,
+			$data->date_modifiers
+		);
+	}
+
+	/**
+	 * Base data retrieval method that handles common patterns.
+	 *
+	 * @param array $config Configuration array with data retrieval settings.
+	 * @return array<string, mixed> Processed data result.
+	 */
+	private function get_base_data( array $config ): array {
+		// Set up default configuration.
+		$defaults = [
+			'args'         => [],
+			'default_args' => [
+				'date_start' => 0,
+				'date_end'   => 0,
+				'filters'    => [],
+			],
+			'queries'      => [],
+			'processors'   => [],
+			'formatters'   => [],
+		];
+
+		$config = wp_parse_args( $config, $defaults );
+
+		// Process arguments with defaults.
+		$args = wp_parse_args( $config['args'], $config['default_args'] );
+
+		// Extract common values.
+		$start   = (int) $args['date_start'];
+		$end     = (int) $args['date_end'];
+		$filters = $this->sanitize_filters( (array) $args['filters'] );
+
+		// Calculate comparison dates if needed.
+		$comparison_dates = null;
+		if ( isset( $config['needs_comparison'] ) && $config['needs_comparison'] ) {
+			$comparison_dates = $this->calculate_comparison_dates( $start, $end, $args );
+		}
+
+		// Execute queries.
+		$results = [];
+		foreach ( $config['queries'] as $key => $query_config ) {
+			$results[ $key ] = $this->execute_data_query( $query_config, $start, $end, $filters, $comparison_dates );
+		}
+
+		// Process results.
+		foreach ( $config['processors'] as $processor ) {
+			if ( is_callable( $processor ) ) {
+				$results = $processor( $results, $args );
+			}
+		}
+
+		// Format final result.
+		$formatted_result = $results;
+		foreach ( $config['formatters'] as $formatter ) {
+			if ( is_callable( $formatter ) ) {
+				$formatted_result = $formatter( $formatted_result, $args );
+			}
+		}
+
+		return $formatted_result;
+	}
+
+	/**
+	 * Calculate comparison date ranges.
+	 *
+	 * @param int   $start Start timestamp.
+	 * @param int   $end   End timestamp.
+	 * @param array $args  Arguments containing optional comparison dates.
+	 * @return array{start: int, end: int} Array with start and end timestamps for comparison period.
+	 */
+	private function calculate_comparison_dates( int $start, int $end, array $args ): array {
+		if ( isset( $args['compare_date_start'] ) && isset( $args['compare_date_end'] ) ) {
+			return [
+				'start' => (int) $args['compare_date_start'],
+				'end'   => (int) $args['compare_date_end'],
+			];
+		}
+
+		$diff = $end - $start;
+		return [
+			'start' => $start - $diff,
+			'end'   => $end - $diff,
+		];
+	}
+
+	/**
+	 * Execute a single data query based on configuration.
+	 *
+	 * @param array      $query_config     Query configuration settings.
+	 * @param int        $start            Start timestamp.
+	 * @param int        $end              End timestamp.
+	 * @param array      $filters          Filters to apply.
+	 * @param array|null $comparison_dates Optional comparison date range.
+	 * @return array<string, mixed> Query results with current and optionally previous period data.
+	 */
+	private function execute_data_query( array $query_config, int $start, int $end, array $filters, ?array $comparison_dates = null ): array {
+		$defaults = [
+			// standard, bounces, conversions, enhanced.
+			'type'          => 'standard',
+			'select'        => [ '*' ],
+			'filters'       => [],
+			'group_by'      => '',
+			'order_by'      => '',
+			'limit'         => 0,
+			'enhanced_args' => [],
+			'comparison'    => false,
+		];
+
+		$query_config = wp_parse_args( $query_config, $defaults );
+
+		// Merge filters.
+		$merged_filters = array_merge( $filters, $query_config['filters'] );
+
+		$result = [];
+
+		// Execute current period query.
+		switch ( $query_config['type'] ) {
+			case 'bounces':
+				$result['current'] = $this->get_bounces( $start, $end, $merged_filters );
+				break;
+			case 'conversions':
+				$result['current'] = $this->get_conversions( $start, $end, $merged_filters );
+				break;
+			case 'enhanced':
+				$enhanced_args = array_merge(
+					[
+						'date_start' => $start,
+						'date_end'   => $end,
+						'filters'    => $merged_filters,
+					],
+					$query_config['enhanced_args']
+				);
+
+				global $wpdb;
+				$qd                = new Query_Data( $enhanced_args );
+				$sql               = $this->get_sql_table( $qd );
+				$result['current'] = $wpdb->get_results( $sql, ARRAY_A );
+				break;
+			default:
+				$result['current'] = $this->get_data(
+					$query_config['select'],
+					$start,
+					$end,
+					$merged_filters
+				);
+				break;
+		}
+
+		// Execute comparison period query if needed.
+		if ( $query_config['comparison'] && $comparison_dates !== null ) {
+			switch ( $query_config['type'] ) {
+				case 'bounces':
+					$result['previous'] = $this->get_bounces(
+						$comparison_dates['start'],
+						$comparison_dates['end'],
+						$merged_filters
+					);
+					break;
+				case 'conversions':
+					$result['previous'] = $this->get_conversions(
+						$comparison_dates['start'],
+						$comparison_dates['end'],
+						$merged_filters
+					);
+					break;
+				default:
+					$result['previous'] = $this->get_data(
+						$query_config['select'],
+						$comparison_dates['start'],
+						$comparison_dates['end'],
+						$merged_filters
+					);
+					break;
+			}
+		}
+
+		return $result;
 	}
 }

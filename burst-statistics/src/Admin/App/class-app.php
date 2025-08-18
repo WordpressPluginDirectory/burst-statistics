@@ -4,6 +4,7 @@ namespace Burst\Admin\App;
 use Burst\Admin\App\Fields\Fields;
 use Burst\Admin\App\Menu\Menu;
 use Burst\Admin\Burst_Onboarding\Burst_Onboarding;
+use Burst\Pro\Pro_Statistics;
 use Burst\TeamUpdraft\Installer\Installer;
 use Burst\Admin\Statistics\Goal_Statistics;
 use Burst\Admin\Statistics\Statistics;
@@ -14,6 +15,8 @@ use Burst\Frontend\Goals\Goals;
 use Burst\Traits\Admin_Helper;
 use Burst\Traits\Helper;
 use Burst\Traits\Save;
+use Burst\Traits\Sanitize;
+use Burst\TeamUpdraft\Onboarding\Onboarding;
 use function Burst\burst_loader;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -27,17 +30,23 @@ class App {
 	use Helper;
 	use Admin_Helper;
 	use Save;
+	use Sanitize;
 
 	public Menu $menu;
 	public Fields $fields;
 	public Tasks $tasks;
-	public function __construct() {
+
+	/**
+	 * Initialize the App class
+	 */
+	public function init(): void {
 		add_action( 'admin_menu', [ $this, 'add_menu' ] );
 		add_action( 'wp_ajax_burst_rest_api_fallback', [ $this, 'rest_api_fallback' ] );
 		add_action( 'admin_footer', [ $this, 'fix_duplicate_menu_item' ], 1 );
 		add_action( 'burst_after_save_field', [ $this, 'update_for_multisite' ], 10, 4 );
 		add_action( 'rest_api_init', [ $this, 'settings_rest_route' ], 8 );
 		add_filter( 'burst_localize_script', [ $this, 'extend_localized_settings_for_dashboard' ], 10, 1 );
+		add_action( 'burst_weekly', [ $this, 'weekly_clear_referrers_table' ] );
 		$this->menu   = new Menu();
 		$this->fields = new Fields();
 		$onboarding   = new Burst_Onboarding();
@@ -50,10 +59,11 @@ class App {
 	 * After activation, redirect the user to the settings page.
 	 */
 	public function maybe_redirect_to_settings_page(): void {
+		// not processing form data, only a conditional redirect, which is available only temporarily.
+        // phpcs:ignore
 		if ( get_transient( 'burst_redirect_to_settings_page' ) && ( ! isset( $_GET['page'] ) || $_GET['page'] !== 'burst' ) ) {
 			delete_transient( 'burst_redirect_to_settings_page' );
-
-			wp_redirect( $this->admin_url( 'burst' ) );
+			wp_safe_redirect( $this->admin_url( 'burst' ) );
 			exit;
 		}
 	}
@@ -64,50 +74,10 @@ class App {
 	public function remove_fallback_notice(): void {
 		if ( get_option( 'burst_ajax_fallback_active' ) !== false ) {
 			delete_option( 'burst_ajax_fallback_active' );
+			delete_option( 'burst_ajax_fallback_active_timestamp' );
 			\Burst\burst_loader()->admin->tasks->schedule_task_validation();
 		}
 	}
-
-
-	/**
-	 * Get pro features for onboarding
-	 *
-	 * @return array
-	 */
-	private function get_pro_features(): array {
-		return [
-			[
-				'title'     => __( 'Country insights', 'burst-statistics' ),
-				'id'        => 'geo_ip',
-				'premium'   => true,
-				'options'   => [],
-				'activated' => true,
-			],
-			[
-				'title'     => __( 'UTM Campaign tracking', 'burst-statistics' ),
-				'id'        => 'utm-campaigns',
-				'premium'   => true,
-				'options'   => [],
-				'activated' => true,
-			],
-			[
-				'title'     => __( 'Auto archiving', 'burst-statistics' ),
-				'id'        => 'archiving',
-				'premium'   => true,
-				'options'   => [],
-				'activated' => true,
-			],
-			[
-				'title'     => __( 'Multiple goals', 'burst-statistics' ),
-				'id'        => 'multiple-goals',
-				'premium'   => true,
-				'options'   => [],
-				'activated' => true,
-			],
-		];
-	}
-
-
 
 	/**
 	 * Fix the duplicate menu item
@@ -117,6 +87,8 @@ class App {
 		 * Handles URL changes to update the active menu item
 		 * Ensures the WordPress admin menu stays in sync with the React app navigation
 		 */
+		// not processing form data, only a conditional script on the burst page.
+        // phpcs:ignore
 		if ( isset( $_GET['page'] ) && $_GET['page'] === 'burst' ) {
 			?>
 			<script>
@@ -211,54 +183,93 @@ class App {
 			apply_filters( 'burst_menu_position', 3 )
 		);
 
-		add_submenu_page(
-			'burst',
-			__( 'Dashboard', 'burst-statistics' ),
-			__( 'Dashboard', 'burst-statistics' ),
-			'view_burst_statistics',
-			'burst',
-			[ $this, 'dashboard' ],
-		);
+		// Get menu configuration and create submenu items dynamically.
+		$menu_config = $this->get_menu_config();
+		$this->create_submenu_items( $menu_config );
 
-		add_submenu_page(
-			'burst',
-			__( 'Statistics', 'burst-statistics' ),
-			__( 'Statistics', 'burst-statistics' ),
-			'view_burst_statistics',
-			'burst#/statistics',
-			[ $this, 'dashboard' ],
-		);
-
-		add_submenu_page(
-			'burst',
-			__( 'Settings', 'burst-statistics' ),
-			__( 'Settings', 'burst-statistics' ),
-			'view_burst_statistics',
-			'burst#/settings/general',
-			[ $this, 'dashboard' ],
-		);
-
-		if ( ! defined( 'BURST_PRO' ) ) {
-			global $submenu;
-			if ( isset( $submenu['burst'] ) ) {
-				$class              = 'burst-link-upgrade';
-				$highest_index      = count( $submenu['burst'] );
-				$submenu['burst'][] = [
-					__( 'Upgrade to Pro', 'burst-statistics' ),
-					'manage_burst_statistics',
-					$this->get_website_url( 'pricing/', [ 'burst_source' => 'plugin-submenu-upgrade' ] ),
-				];
-				if ( isset( $submenu['burst'][ $highest_index ] ) ) {
-					if ( ! isset( $submenu['burst'][ $highest_index ][4] ) ) {
-						$submenu['burst'][ $highest_index ][4] = '';
-					}
-					$submenu['burst'][ $highest_index ][4] .= ' ' . $class;
-				}
-			}
-		}
+		// Add "Upgrade to Pro" menu item if not Pro version.
+		$this->add_upgrade_menu_item();
 
 		add_action( "admin_print_scripts-{$page_hook_suffix}", [ $this, 'plugin_admin_scripts' ], 1 );
 	}
+
+	/**
+	 * Get menu configuration from config file
+	 *
+	 * @return array<int, array<string, mixed>> Menu configuration array
+	 */
+	private function get_menu_config(): array {
+		$config_file = BURST_PATH . 'src/Admin/App/config/menu.php';
+		if ( ! file_exists( $config_file ) ) {
+			return [];
+		}
+
+		$menu_config = include $config_file;
+		return is_array( $menu_config ) ? $menu_config : [];
+	}
+
+	/**
+	 * Create submenu items from configuration
+	 *
+	 * @param array<int, array<string, mixed>> $menu_config Menu configuration array.
+	 */
+	private function create_submenu_items( array $menu_config ): void {
+		foreach ( $menu_config as $menu_item ) {
+			// Skip items that shouldn't appear in WordPress admin menu.
+			if ( ! isset( $menu_item['show_in_admin'] ) || ! $menu_item['show_in_admin'] ) {
+				continue;
+			}
+
+			$capability = $menu_item['capabilities'] ?? 'view_burst_statistics';
+			if ( ! current_user_can( $capability ) ) {
+				continue;
+			}
+
+			$page_title = $menu_item['title'] ?? '';
+			$menu_title = $menu_item['title'] ?? '';
+			$menu_slug  = $menu_item['menu_slug'] ?? 'burst';
+
+			add_submenu_page(
+				'burst',
+				$page_title,
+				$menu_title,
+				$capability,
+				$menu_slug,
+				[ $this, 'dashboard' ]
+			);
+		}
+	}
+
+	/**
+	 * Add "Upgrade to Pro" menu item if not Pro version
+	 */
+    // phpcs:disable
+	private function add_upgrade_menu_item(): void {
+		if ( defined( 'BURST_PRO' ) ) {
+			return;
+		}
+
+		global $submenu;
+		if ( ! isset( $submenu['burst'] ) ) {
+			return;
+		}
+
+		$class              = 'burst-link-upgrade';
+		$highest_index      = count( $submenu['burst'] );
+		$submenu['burst'][] = [
+			__( 'Upgrade to Pro', 'burst-statistics' ),
+			'manage_burst_statistics',
+			$this->get_website_url( 'pricing/', [ 'utm_source' => 'plugin-submenu-upgrade' ] ),
+		];
+
+		if ( isset( $submenu['burst'][ $highest_index ] ) ) {
+			if ( ! isset( $submenu['burst'][ $highest_index ][4] ) ) {
+				$submenu['burst'][ $highest_index ][4] = '';
+			}
+			$submenu['burst'][ $highest_index ][4] .= ' ' . $class;
+		}
+	}
+    // phpcs:enable
 
 	/**
 	 * Enqueue scripts for the plugin
@@ -284,6 +295,9 @@ class App {
 		// @phpstan-ignore-next-line
 		burst_wp_enqueue_media();
 
+		// add 'wp-core-data' to the dependencies.
+		$js_data['dependencies'][] = 'wp-core-data';
+
 		// Load the main script in the head with high priority.
 		wp_enqueue_script(
 			'burst-settings',
@@ -300,6 +314,8 @@ class App {
 		add_filter(
 			'script_loader_tag',
 			function ( $tag, $handle, $src ) {
+				// Unused variable, but required by the function signature.
+				unset( $src );
 				if ( $handle === 'burst-settings' ) {
 					return str_replace( ' src', ' fetchpriority="high" src', $tag );
 				}
@@ -333,7 +349,12 @@ class App {
 		);
 	}
 
-	public function get_date_ranges() {
+	/**
+	 * Get available date ranges for the dashboard.
+	 *
+	 * @return string[] List of date range slugs.
+	 */
+	public function get_date_ranges(): array {
 		return apply_filters(
 			'burst_date_ranges',
 			[
@@ -352,10 +373,12 @@ class App {
 	}
 
 	/**
-	 * @param $data
-	 * @return array
+	 * Extend the localized settings for the dashboard.
+	 *
+	 * @param array<string, mixed> $data
+	 * @return array<string, mixed>
 	 */
-	public function extend_localized_settings_for_dashboard( $data ): array {
+	public function extend_localized_settings_for_dashboard( array $data ): array {
 		$data['menu']   = $this->menu->get();
 		$data['fields'] = $this->fields->get();
 		return $data;
@@ -365,55 +388,103 @@ class App {
 	 * If the rest api is blocked, the code will try an admin ajax call as fall back.
 	 */
 	public function rest_api_fallback(): void {
-		$response = [];
-		$error    = $action = $do_action = $data = $data_type = false;
+		$response  = [];
+		$error     = false;
+		$action    = false;
+		$do_action = false;
+		$data      = [];
+		$data_type = false;
+
 		if ( ! $this->user_can_view() ) {
 			$error = true;
 		}
-		// if the site is using this fallback, we want to show a notice.
-		update_option( 'burst_ajax_fallback_active', time(), false );
-		if ( isset( $_GET['rest_action'] ) ) {
-			$action = sanitize_text_field( $_GET['rest_action'] );
+
+		// --- Parse GET ---
+        // phpcs:ignore
+        if ( isset( $_GET['rest_action'] ) ) {
+            // phpcs:ignore
+            $action = sanitize_text_field( $_GET['rest_action'] );
 			if ( strpos( $action, 'burst/v1/data/' ) !== false ) {
 				$data_type = strtolower( str_replace( 'burst/v1/data/', '', $action ) );
 			}
 		}
 
-		// get all of the rest of the $_GET parameters so we can forward them in the REST request.
-		$get_params = $_GET;
-		// remove the rest_action parameter.
+		// --- Collect GET params ---
+        // phpcs:ignore
+        $get_params = $_GET;
 		unset( $get_params['rest_action'] );
 
-		// convert get metrics to array if it is a string.
-		if ( isset( $get_params['metrics'] ) && is_string( $get_params['metrics'] ) ) {
-			$get_params['metrics'] = explode( ',', $get_params['metrics'] );
-		}
-
-		// Handle filters - check if it's a string and needs slashes removed.
-		if ( isset( $get_params['filters'] ) ) {
-			if ( is_string( $get_params['filters'] ) ) {
-				// Remove slashes but keep as JSON string for later decoding.
-				$get_params['filters'] = stripslashes( $get_params['filters'] );
+		// --- Parse POST body, if present ---
+		$request_data = json_decode( file_get_contents( 'php://input' ), true );
+		if ( is_array( $request_data ) ) {
+			$req_path = isset( $request_data['path'] ) ? sanitize_text_field( $request_data['path'] ) : false;
+			if ( $req_path ) {
+				// override if provided by POST.
+				$action = $req_path;
+				if ( ! $data_type && strpos( $action, 'burst/v1/data/' ) !== false ) {
+					// Extract data type for /data/* when using POST.
+					$data_type = strtolower( str_replace( 'burst/v1/data/', '', $action ) );
+				}
 			}
-		}
+			$data = isset( $request_data['data'] ) && is_array( $request_data['data'] ) ? $request_data['data'] : [];
 
-		$requestData = json_decode( file_get_contents( 'php://input' ), true );
-		if ( $requestData ) {
-			$action = $requestData['path'] ?? false;
-
-			$action = sanitize_text_field( $action );
-			$data   = $requestData['data'] ?? false;
 			if ( strpos( $action, 'burst/v1/do_action/' ) !== false ) {
 				$do_action = strtolower( str_replace( 'burst/v1/do_action/', '', $action ) );
 			}
 		}
 
-		$request = new \WP_REST_Request();
-		$args    = [ 'type', 'nonce', 'date_start', 'date_end', 'args', 'search', 'filters', 'metrics', 'group_by' ];
-		foreach ( $args as $arg ) {
-			if ( isset( $get_params[ $arg ] ) ) {
-				$request->set_param( $arg, $get_params[ $arg ] );
+		$nonce = $get_params['nonce'] ?? ( $request_data['data']['nonce'] ?? null );
+		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
+			$response = new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'The provided nonce is not valid.',
+				]
+			);
+			ob_get_clean();
+			header( 'Content-Type: application/json' );
+			echo wp_json_encode( $response );
+			exit;
+		}
+
+		// Fallback notice.
+		$fallback_already_active = (int) get_option( 'burst_ajax_fallback_active_timestamp', 0 );
+		if ( $fallback_already_active === 0 ) {
+			update_option( 'burst_ajax_fallback_active_timestamp', time(), false );
+		}
+		if ( $fallback_already_active > 0 && ( time() - $fallback_already_active ) > 48 * HOUR_IN_SECONDS ) {
+			update_option( 'burst_ajax_fallback_active', true, false );
+		}
+
+		// Normalize/merge params from GET and POST data.
+		$merged = $get_params;
+		foreach ( [ 'goal_id', 'type', 'date_start', 'date_end', 'args', 'search', 'filters', 'metrics', 'group_by' ] as $k ) {
+			if ( array_key_exists( $k, $data ) ) {
+				$merged[ $k ] = $data[ $k ];
 			}
+		}
+
+		// Convert metrics string -> array.
+		if ( isset( $merged['metrics'] ) && is_string( $merged['metrics'] ) ) {
+			$merged['metrics'] = explode( ',', $merged['metrics'] );
+		}
+
+		// Handle filters slashes (string JSON coming from GET); keep arrays as-is.
+		if ( isset( $merged['filters'] ) && is_string( $merged['filters'] ) ) {
+			$merged['filters'] = stripslashes( $merged['filters'] );
+		}
+
+		// Build WP_REST_Request with merged params.
+		$request = new \WP_REST_Request();
+		foreach ( [ 'goal_id', 'type', 'nonce', 'date_start', 'date_end', 'args', 'search', 'filters', 'metrics', 'group_by' ] as $arg ) {
+			if ( isset( $merged[ $arg ] ) ) {
+				$request->set_param( $arg, $merged[ $arg ] );
+			}
+		}
+
+		// If we detected /data/, make sure 'type' is set from the path.
+		if ( $data_type ) {
+			$request->set_param( 'type', $data_type );
 		}
 
 		if ( ! $error ) {
@@ -435,19 +506,18 @@ class App {
 				$response = $this->rest_api_goals_set( $request, $data );
 			} elseif ( strpos( $action, '/posts/' ) !== false ) {
 				$response = $this->get_posts( $request, $data );
-			} elseif ( strpos( $action, '/data/' ) ) {
-				$request->set_param( 'type', $data_type );
+			} elseif ( strpos( $action, '/data/' ) !== false ) {
 				$response = $this->get_data( $request );
 			} elseif ( $do_action ) {
-				$request = new \WP_REST_Request();
-				$request->set_param( 'action', $do_action );
-				$response = $this->do_action( $request, $data );
+				$req = new \WP_REST_Request();
+				$req->set_param( 'action', $do_action );
+				$response = $this->do_action( $req, $data );
 			}
 		}
 
 		ob_get_clean();
 		header( 'Content-Type: application/json' );
-		echo json_encode( $response );
+		echo wp_json_encode( $response );
 		exit;
 	}
 
@@ -624,7 +694,7 @@ class App {
 				--tw-blur: blur(4px);
 				filter: var(--tw-blur);
 			}
-			
+
 			/* Borders */
 			#burst-statistics .border-b-4 {
 				border-bottom-width: 4px;
@@ -638,12 +708,12 @@ class App {
 			<div class="bg-white">
 				<div class="mx-auto flex max-w-screen-2xl items-center gap-5 px-5">
 					<div>
-						<img width="100" src="<?php echo BURST_URL . 'assets/img/burst-logo.svg'; ?>" alt="Logo Burst" class="h-11 w-auto px-5 py-2">
+						<img width="100" src="<?php echo esc_url_raw( BURST_URL ) . 'assets/img/burst-logo.svg'; ?>" alt="Logo Burst" class="h-11 w-auto px-5 py-2">
 					</div>
 					<div class="flex items-center blur-sm animate-pulse">
-						<div class="py-6 px-5 border-b-4 border-transparent"><?php _e( 'Dashboard', 'burst-statistics' ); ?></div>
-						<div class="py-6 px-5 border-b-4 border-transparent ml-2"><?php _e( 'Statistics', 'burst-statistics' ); ?></div>
-						<div class="py-6 px-5 border-b-4 border-transparent ml-2"><?php _e( 'Settings', 'burst-statistics' ); ?></div>
+						<div class="py-6 px-5 border-b-4 border-transparent"><?php esc_html_e( 'Dashboard', 'burst-statistics' ); ?></div>
+						<div class="py-6 px-5 border-b-4 border-transparent ml-2"><?php esc_html_e( 'Statistics', 'burst-statistics' ); ?></div>
+						<div class="py-6 px-5 border-b-4 border-transparent ml-2"><?php esc_html_e( 'Settings', 'burst-statistics' ); ?></div>
 					</div>
 				</div>
 			</div>
@@ -696,6 +766,10 @@ class App {
 	 * Register REST API routes for the plugin.
 	 */
 	public function settings_rest_route(): void {
+		// for our ajax fallback test, we don't want to register the REST API routes.
+		if ( defined( 'BURST_FALLBACK_TEST' ) ) {
+			return;
+		}
 		register_rest_route(
 			'burst/v1',
 			'menu',
@@ -852,22 +926,32 @@ class App {
 	 * Perform a specific action based on the provided request.
 	 *
 	 * @param \WP_REST_Request $request //The REST API request object.
-	 * @param array|bool       $ajax_data //Optional AJAX data to process.
-	 * @return \WP_REST_Response|\WP_Error //The response object or error.
+	 * @param array            $ajax_data //Optional AJAX data to process.
+	 * @return \WP_REST_Response //The response object or error.
 	 */
-	public function do_action( \WP_REST_Request $request, $ajax_data = false ) {
+	public function do_action( \WP_REST_Request $request, array $ajax_data = [] ): \WP_REST_Response {
 		if ( ! $this->user_can_view() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
+			);
 		}
 		$action = sanitize_title( $request->get_param( 'action' ) );
-		$data   = $ajax_data ?: $request->get_params();
+		$data   = empty( $ajax_data ) ? $request->get_params() : $ajax_data;
 		$nonce  = $data['nonce'];
 		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'The provided nonce is not valid.',
+				]
+			);
 		}
 
 		$data = $data['action_data'];
-		if ( ! $ajax_data ) {
+		if ( empty( $ajax_data ) ) {
 			$this->remove_fallback_notice();
 		}
 		switch ( $action ) {
@@ -889,6 +973,10 @@ class App {
 			case 'tracking':
 				$data = Endpoint::get_tracking_status_and_time();
 				break;
+			case 'get_filter_options':
+				$data_type = isset( $data['data_type'] ) ? sanitize_title( $data['data_type'] ) : '';
+				$data      = $this->get_filter_options( $data_type );
+				break;
 			default:
 				$data = apply_filters( 'burst_do_action', [], $action, $data );
 		}
@@ -904,6 +992,162 @@ class App {
 			],
 			200
 		);
+	}
+
+	/**
+	 * Get advanced filter options.
+	 *
+	 * @param string $data_type The specific data type to return (devices, browsers, platforms, countries, pages, referrers, campaigns).
+	 * @return array
+	 */
+	private function get_filter_options( string $data_type ): array {
+		if ( ! $this->user_can_view() ) {
+			return [];
+		}
+
+		global $wpdb;
+		$valid_types = [ 'devices', 'browsers', 'platforms', 'countries', 'states', 'cities', 'pages', 'referrers', 'campaigns', 'sources', 'mediums', 'contents', 'terms' ];
+
+		// Return invalid data type error.
+		if ( empty( $data_type ) || ! in_array( $data_type, $valid_types, true ) ) {
+			return [
+				'success' => false,
+				'message' => 'Invalid data type. Valid types are: ' . implode( ', ', $valid_types ),
+			];
+		}
+
+		// Define data type queries.
+		$queries = [
+			'devices'   => "SELECT MIN(ID) as ID, name FROM {$wpdb->prefix}burst_devices GROUP BY name",
+			'browsers'  => "SELECT MIN(ID) as ID, name FROM {$wpdb->prefix}burst_browsers GROUP BY name",
+			'platforms' => "SELECT MIN(ID) as ID, name FROM {$wpdb->prefix}burst_platforms GROUP BY name",
+			'states'    => "SELECT DISTINCT state AS name FROM {$wpdb->prefix}burst_locations",
+			'cities'    => "SELECT DISTINCT city AS name FROM {$wpdb->prefix}burst_locations",
+			'pages'     => "SELECT DISTINCT page_url AS name FROM {$wpdb->prefix}burst_statistics",
+			'campaigns' => "SELECT DISTINCT campaign AS name FROM {$wpdb->prefix}burst_campaigns",
+			'sources'   => "SELECT DISTINCT source AS name FROM {$wpdb->prefix}burst_campaigns",
+			'mediums'   => "SELECT DISTINCT medium AS name FROM {$wpdb->prefix}burst_campaigns",
+			'contents'  => "SELECT DISTINCT content AS name FROM {$wpdb->prefix}burst_campaigns",
+			'terms'     => "SELECT DISTINCT term AS name FROM {$wpdb->prefix}burst_campaigns",
+		];
+
+		// Get raw data based on data type.
+		if ( $data_type === 'countries' ) {
+			$raw_data = apply_filters( 'burst_countries', [] );
+			// filter out localhost.
+			unset( $raw_data['LO'] );
+			$raw_data = array_map(
+				fn( $key, $value ) => [
+					'ID'   => $key,
+					'name' => $value,
+				],
+				array_keys( $raw_data ),
+				$raw_data
+			);
+		} elseif ( $data_type === 'referrers' ) {
+			$raw_data = $this->get_referrer_options();
+			$raw_data = array_map(
+				fn( $value ) => [
+					'ID'   => $value['name'],
+					'name' => $value['name'],
+				],
+				array_values( $raw_data )
+			);
+		} else {
+			$raw_data = $wpdb->get_results( $queries[ $data_type ], ARRAY_A );
+			$raw_data = array_filter(
+				$raw_data,
+				function ( $item ) {
+					foreach ( [ 'name', 'id', 'key' ] as $field ) {
+						if ( isset( $item[ $field ] ) ) {
+							$value = trim( (string) $item[ $field ] );
+							if ( $value === '' || $value === '-1' || $value === 'null' ) {
+								return false;
+							}
+						}
+					}
+
+					return true;
+				}
+			);
+
+			if ( $data_type === 'devices' ) {
+				$raw_data = array_map(
+					function ( $item ) {
+						$item['key'] = $item['name'];
+						// get nicename for device.
+						switch ( $item['name'] ) {
+							case 'desktop':
+								$item['name'] = __( 'Desktop', 'burst-statistics' );
+								break;
+							case 'mobile':
+								$item['name'] = __( 'Mobile', 'burst-statistics' );
+								break;
+							case 'tablet':
+								$item['name'] = __( 'Tablet', 'burst-statistics' );
+								break;
+							default:
+								$item['name'] = __( 'Other', 'burst-statistics' );
+								break;
+						}
+
+						return $item;
+					},
+					$raw_data
+				);
+			}
+		}
+
+		return [
+			'success' => true,
+			'data'    => [
+				$data_type => $raw_data,
+			],
+		];
+	}
+
+	/**
+	 * On a weekly basis, clear the referrers table.
+	 *
+	 * @hooked burst_weekly
+	 */
+	public function weekly_clear_referrers_table(): void {
+		if ( ! $this->user_can_manage() ) {
+			return;
+		}
+		global $wpdb;
+		$wpdb->query( "TRUNCATE TABLE {$wpdb->prefix}burst_referrers" );
+	}
+
+	/**
+	 * Get referrer options for the advanced filter. The table is cleared weekly, to ensure up to date data.
+	 *
+	 * @return array
+	 */
+	private function get_referrer_options(): array {
+		global $wpdb;
+		$referrers = $wpdb->get_results( "SELECT name FROM {$wpdb->prefix}burst_referrers ORDER BY ID ASC", ARRAY_A );
+		if ( empty( $referrers ) ) {
+			$sql = "INSERT IGNORE INTO {$wpdb->prefix}burst_referrers (name)
+                    SELECT domain
+                    FROM (
+                      SELECT 
+                        LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '/', -1)) AS domain
+                      FROM {$wpdb->prefix}burst_statistics
+                      WHERE referrer IS NOT NULL 
+                        AND referrer != ''
+                        AND referrer LIKE 'http%'
+                        AND referrer NOT LIKE '/%'
+                    ) AS derived
+                    WHERE domain != ''
+                      AND SUBSTRING_INDEX(domain, ':', 1) NOT REGEXP '^[0-9]{1,3}(\\.[0-9]{1,3}){3}$'
+                    GROUP BY domain
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 2000;";
+			$wpdb->query( $sql );
+			$referrers = $wpdb->get_results( "select name from {$wpdb->prefix}burst_referrers ORDER BY ID ASC", ARRAY_A );
+		}
+		return $referrers;
 	}
 
 	/**
@@ -948,37 +1192,49 @@ class App {
 	}
 
 	/**
-	 * Get data from the REST API
+	 * Process common REST API request patterns
+	 *
+	 * @param \WP_REST_Request $request The REST request object.
+	 * @param string           $permission_level 'view' or 'manage'.
+	 * @return array<string, mixed> Processed request data or error.
 	 */
-	public function get_data( \WP_REST_Request $request ) {
-		if ( ! $this->user_can_view() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+	private function process_rest_request( \WP_REST_Request $request, string $permission_level = 'view' ): array {
+		$can_access = $permission_level === 'manage' ? $this->user_can_manage() : $this->user_can_view();
+		if ( ! $can_access ) {
+			return [
+				'success' => false,
+				'type'    => 'error',
+				'message' => 'Invalid permissions',
+			];
 		}
+
 		$nonce = $request->get_param( 'nonce' );
 		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return [
+				'success' => false,
+				'type'    => 'error',
+				'message' => 'Invalid nonce',
+			];
 		}
 
-		$type = sanitize_title( $request->get_param( 'type' ) );
-		// in the database, the UTC time is stored, so we query by the corrected unix time.
-		$args = [
-			'date_start' => Statistics::convert_date_to_unix( $request->get_param( 'date_start' ) . ' 00:00:00' ),
-			// add 00:00:00 to date,.
-			'date_end'   => Statistics::convert_date_to_unix( $request->get_param( 'date_end' ) . ' 23:59:59' ),
-			// add 23:59:59 to date.
+		return [
+			'success' => true,
+			'type'    => sanitize_title( $request->get_param( 'type' ) ),
 		];
+	}
 
-		$available_args = [ 'filters', 'metrics', 'group_by', 'goal_id' ];
-
-		// check for args from $request->get_param( 'filters') etc. and add to $args.
-		foreach ( $available_args as $arg ) {
-			if ( $request->get_param( $arg ) ) {
-				$args[ $arg ] = $request->get_param( $arg );
-			}
+	/**
+	 * Get data from the REST API.
+	 */
+	public function get_data( \WP_REST_Request $request ): \WP_REST_Response {
+		// Process common request patterns.
+		$processed = $this->process_rest_request( $request, 'view' );
+		if ( $processed['success'] === false ) {
+			return $this->create_rest_response( $processed, 403 );
 		}
 
-		$goal_statistics = new Goal_Statistics();
-		$args['filters'] = isset( $args['filters'] ) ? \Burst\burst_loader()->admin->statistics->sanitize_filters( (array) json_decode( $args['filters'] ) ) : [];
+		$type = $processed['type'];
+		$args = $this->sanitize_request_args( $request, $type );
 
 		switch ( $type ) {
 			case 'live-visitors':
@@ -992,11 +1248,11 @@ class App {
 				$data = \Burst\burst_loader()->admin->statistics->get_today_data( $args );
 				break;
 			case 'goals':
-				$args['goal_id'] = $args['goal_id'] ?? 0;
+				$goal_statistics = new Goal_Statistics();
 				$data            = $goal_statistics->get_goals_data( $args );
 				break;
 			case 'live-goals':
-				$args['goal_id'] = $args['goal_id'] ?? 0;
+				$goal_statistics = new Goal_Statistics();
 				$data            = $goal_statistics->get_live_goals_count( $args );
 				break;
 			case 'insights':
@@ -1019,39 +1275,68 @@ class App {
 				$data = \Burst\burst_loader()->admin->statistics->get_datatables_data( $args );
 				break;
 			default:
-				$data = apply_filters( 'burst_get_data', [], $type, $args, $request );
+				$data = apply_filters( 'burst_get_data', $type, $args, $request );
 		}
+
+		return $this->create_rest_response( $data );
+	}
+
+	/**
+	 * Create standardized REST response
+	 *
+	 * @param mixed $data Response data.
+	 * @param int   $status HTTP status code.
+	 * @return \WP_REST_Response The REST response object.
+	 */
+	private function create_rest_response( $data, int $status = 200 ): \WP_REST_Response {
 		if ( ob_get_length() ) {
 			ob_clean();
 		}
 
-		if ( isset( $data['error'] ) ) {
-			return new \WP_Error( 'rest_invalid_data', $data['error'], [ 'status' => 400 ] );
+		if ( ( isset( $data['success'] ) && ! $data['success'] ) || $status !== 200 ) {
+			return new \WP_REST_Response(
+				[
+					'data'    => $data,
+					'success' => false,
+				],
+				$status
+			);
 		}
 
 		return new \WP_REST_Response(
 			[
 				'data'            => $data,
 				'request_success' => true,
+				'success'         => true,
 			],
-			200
+			$status
 		);
 	}
 
 	/**
 	 * Save options through the rest api
 	 */
-	public function rest_api_options_set( \WP_REST_Request $request, $ajax_data = false ) {
+	public function rest_api_options_set( \WP_REST_Request $request, array $ajax_data = [] ): \WP_REST_Response {
 		if ( ! $this->user_can_manage() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
+			);
 		}
-		$data = $ajax_data ?: $request->get_json_params();
+		$data = empty( $ajax_data ) ? $request->get_json_params() : $ajax_data;
 
 		// get the nonce.
 		$nonce   = $data['nonce'];
 		$options = $data['option'];
 		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'Invalid nonce.',
+				]
+			);
 		}
 
 		// sanitize the options.
@@ -1078,34 +1363,39 @@ class App {
 
 	/**
 	 * Save multiple Burst settings fields via REST API
-	 *
-	 * @param \WP_REST_Request $request
-	 * @param array|false      $ajax_data Optional ajax data if not using REST
-	 * @return \WP_REST_Response|\WP_Error
 	 */
-	public function rest_api_fields_set( $request, $ajax_data = false ) {
-
-		// Permission check
+	public function rest_api_fields_set( \WP_REST_Request $request, array $ajax_data = [] ): \WP_REST_Response {
 		if ( ! $this->user_can_manage() ) {
-			return new \WP_Error(
-				'burst_rest_forbidden',
-				__( 'You do not have permission to perform this action.', 'burst-statistics' ),
-				[ 'status' => 403 ]
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
 			);
 		}
 
 		// Get and validate data.
 		try {
-			$data = $ajax_data ?: $request->get_json_params();
+			$data = empty( $ajax_data ) ? $request->get_json_params() : $ajax_data;
 			if ( ! isset( $data['nonce'], $data['fields'] ) || ! is_array( $data['fields'] ) ) {
-				throw new \Exception( __( 'Invalid request format', 'burst-statistics' ) );
+				return new \WP_REST_Response(
+					[
+						'success' => false,
+						'message' => 'Invalid request format.',
+					]
+				);
 			}
 
 			if ( ! $this->verify_nonce( $data['nonce'], 'burst_nonce' ) ) {
-				throw new \Exception( __( 'Invalid nonce', 'burst-statistics' ) );
+				return new \WP_REST_Response(
+					[
+						'success' => false,
+						'message' => 'Invalid noce.',
+					]
+				);
 			}
 
-			if ( ! $ajax_data ) {
+			if ( empty( $ajax_data ) ) {
 				$this->remove_fallback_notice();
 			}
 
@@ -1147,7 +1437,7 @@ class App {
 				// deprecated.
 				do_action( 'burst_before_save_option', $field_id, $value, $prev_value, $type );
 				// Sanitize the value.
-				$sanitized_value = $this->sanitize_field( $value, $type, $field_id );
+				$sanitized_value = $this->sanitize_field( $value, $type );
 				do_action( 'burst_before_save_field', $field_id, $sanitized_value, $prev_value, $type );
 
 				// Allow filtering of sanitized value.
@@ -1190,54 +1480,43 @@ class App {
 			);
 
 		} catch ( \Exception $e ) {
-			return new \WP_Error(
-				'burst_rest_error',
-				$e->getMessage(),
-				[ 'status' => 400 ]
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => $e->getMessage(),
+				]
 			);
 		}
 	}
 
 	/**
 	 * Get the rest api fields
-	 *
-	 * @return \WP_Error | \WP_REST_Response
 	 */
-	public function rest_api_fields_get( $request ) {
+	public function rest_api_fields_get( \WP_REST_Request $request ): \WP_REST_Response {
 
 		if ( ! $this->user_can_view() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
+			);
 		}
 
 		$nonce = $request->get_param( 'nonce' );
 		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'The provided nonce is not valid.',
+				]
+			);
 		}
 
 		$output = [];
 		$fields = $this->fields->get();
 		$menu   = $this->menu->get();
 		foreach ( $fields as $index => $field ) {
-			/**
-			 * Load data from source
-			 */
-			if ( isset( $field['data_source'] ) ) {
-				$data_source = $field['data_source'];
-				if ( is_array( $data_source ) ) {
-					$main           = $data_source[0];
-					$class          = $data_source[1];
-					$function       = $data_source[2];
-					$field['value'] = [];
-					if ( function_exists( $main ) ) {
-						// @phpstan-ignore-next-line
-						$field['value'] = $main()->$class->$function();
-					}
-				} elseif ( function_exists( $field['data_source'] ) ) {
-					$func           = $field['data_source'];
-					$field['value'] = $func();
-				}
-			}
-
 			$fields[ $index ] = $field;
 		}
 
@@ -1261,18 +1540,25 @@ class App {
 
 	/**
 	 * Get goals for the react dashboard
-	 *
-	 * @param \WP_REST_Request $request
-	 * @return \WP_REST_Response | \WP_Error
 	 */
-	public function rest_api_goals_get( $request ) {
+	public function rest_api_goals_get( \WP_REST_Request $request ): \WP_REST_Response {
 		if ( ! $this->user_can_view() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
+			);
 		}
 
 		$nonce = $request->get_param( 'nonce' );
 		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'The provided nonce is not valid.',
+				]
+			);
 		}
 
 		$goal_object = new Goals();
@@ -1299,14 +1585,24 @@ class App {
 	/**
 	 * Get the rest api fields
 	 */
-	public function rest_api_goal_fields_get( \WP_REST_Request $request ) {
+	public function rest_api_goal_fields_get( \WP_REST_Request $request ): \WP_REST_Response {
 		if ( ! $this->user_can_manage() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
+			);
 		}
 
 		$nonce = $request->get_param( 'nonce' );
 		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'The provided nonce is not valid.',
+				]
+			);
 		}
 
 		$goals = apply_filters( 'burst_rest_api_goals_get', ( new Goals() )->get_goals() );
@@ -1329,16 +1625,26 @@ class App {
 	/**
 	 * Save goals via REST API
 	 */
-	public function rest_api_goals_set( \WP_REST_Request $request, $ajax_data = false ) {
+	public function rest_api_goals_set( \WP_REST_Request $request, array $ajax_data = [] ): \WP_REST_Response {
 		if ( ! $this->user_can_manage() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
+			);
 		}
-		$data  = $ajax_data ?: $request->get_json_params();
+		$data  = empty( $ajax_data ) ? $request->get_json_params() : $ajax_data;
 		$nonce = $data['nonce'];
 		$goals = $data['goals'];
 		// get the nonce.
 		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'The provided nonce is not valid.',
+				]
+			);
 		}
 
 		foreach ( $goals as $index => $goal_data ) {
@@ -1373,14 +1679,24 @@ class App {
 	/**
 	 * Delete a goal via REST API
 	 */
-	public function rest_api_goals_delete( \WP_REST_Request $request, $ajax_data = false ) {
+	public function rest_api_goals_delete( \WP_REST_Request $request, array $ajax_data = [] ): \WP_REST_Response {
 		if ( ! $this->user_can_manage() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
+			);
 		}
-		$data  = $ajax_data ?: $request->get_json_params();
+		$data  = empty( $ajax_data ) ? $request->get_json_params() : $ajax_data;
 		$nonce = $data['nonce'];
 		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'The provided nonce is not valid.',
+				]
+			);
 		}
 		$id = $data['id'];
 
@@ -1412,17 +1728,27 @@ class App {
 	 * Add predefined goals through REST API
 	 *
 	 * @param \WP_REST_Request $request The REST API request object.
-	 * @param array|bool       $ajax_data Optional AJAX data to process.
-	 * @return \WP_REST_Response|\WP_Error The response object or error.
+	 * @param array            $ajax_data Optional AJAX data to process.
+	 * @return \WP_REST_Response The response object or error.
 	 */
-	public function rest_api_goals_add_predefined( \WP_REST_Request $request, $ajax_data = false ) {
+	public function rest_api_goals_add_predefined( \WP_REST_Request $request, array $ajax_data = [] ): \WP_REST_Response {
 		if ( ! $this->user_can_manage() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
+			);
 		}
-		$data  = $ajax_data ?: $request->get_json_params();
+		$data  = empty( $ajax_data ) ? $request->get_json_params() : $ajax_data;
 		$nonce = $data['nonce'];
 		if ( ! $this->verify_nonce( $nonce, 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'The provided nonce is not valid.',
+				]
+			);
 		}
 		$id = $data['id'];
 
@@ -1433,10 +1759,9 @@ class App {
 			ob_clean();
 		}
 
+		$goal = [];
 		if ( $goal_id > 0 ) {
 			$goal = new Goal( $goal_id );
-		} else {
-			return new \WP_Error( 'rest_goal_not_added', 'The predefined goal was not added.', [ 'status' => 400 ] );
 		}
 
 		$response = new \WP_REST_Response(
@@ -1446,7 +1771,6 @@ class App {
 			]
 		);
 		$response->set_status( 200 );
-
 		return $response;
 	}
 
@@ -1454,17 +1778,27 @@ class App {
 	 * Add a new goal via REST API
 	 *
 	 * @param \WP_REST_Request $request The REST API request object.
-	 * @param array|bool       $ajax_data Optional AJAX data to process.
-	 * @return \WP_REST_Response|\WP_Error $response
+	 * @param array            $ajax_data Optional AJAX data to process.
+	 * @return \WP_REST_Response $response
 	 */
-	public function rest_api_goals_add( \WP_REST_Request $request, $ajax_data = false ) {
+	public function rest_api_goals_add( \WP_REST_Request $request, array $ajax_data = [] ): \WP_REST_Response {
 		if ( ! $this->user_can_manage() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'You do not have permission to perform this action.',
+				]
+			);
 		}
-		$goal = $ajax_data ?: $request->get_json_params();
+		$goal = empty( $ajax_data ) ? $request->get_json_params() : $ajax_data;
 
 		if ( ! $this->verify_nonce( $goal['nonce'], 'burst_nonce' ) ) {
-			return new \WP_Error( 'rest_invalid_nonce', 'The provided nonce is not valid.', [ 'status' => 400 ] );
+			return new \WP_REST_Response(
+				[
+					'success' => false,
+					'message' => 'The provided nonce is not valid.',
+				]
+			);
 		}
 
 		$goal = new Goal();
@@ -1491,11 +1825,13 @@ class App {
 	 * Get the menu for the settings page in Burst
 	 *
 	 * @param \WP_REST_Request $request The REST API request object.
-	 * @return array<int, array<string, mixed>> | \WP_Error List of field definitions.
+	 * @return array<int, array<string, mixed>> List of field definitions.
 	 */
-	public function rest_api_menu( \WP_REST_Request $request ) {
+	public function rest_api_menu( \WP_REST_Request $request ): array {
+		// Unused parameter, but required by the method signature.
+		unset( $request );
 		if ( ! $this->user_can_manage() ) {
-			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
+			return [];
 		}
 		if ( ob_get_length() ) {
 			ob_clean();
@@ -1516,61 +1852,17 @@ class App {
 		}
 		$new_menu_items = $menu_items;
 		foreach ( $menu_items as $key => $menu_item ) {
-			$searchResult = array_search( $menu_item['id'], array_column( $fields, 'menu_id' ), true );
-			if ( $searchResult === false ) {
+			$search_result = in_array( $menu_item['id'], array_column( $fields, 'menu_id' ), true );
+			if ( $search_result === false ) {
 				unset( $new_menu_items[ $key ] );
 				// reset array keys to prevent issues with react.
 				$new_menu_items = array_values( $new_menu_items );
 			} elseif ( isset( $menu_item['menu_items'] ) ) {
-				$updatedValue                         = $this->drop_empty_menu_items( $menu_item['menu_items'], $fields );
-				$new_menu_items[ $key ]['menu_items'] = $updatedValue;
+				$new_menu_items[ $key ]['menu_items'] = $this->drop_empty_menu_items( $menu_item['menu_items'], $fields );
 			}
 		}
 
 		return $new_menu_items;
-	}
-
-	/**
-	 * Sanitize a field
-	 *
-	 * @param mixed  $value The value to sanitize.
-	 * @param string $type The type of the field.
-	 * @param string $id The ID of the field.
-	 * @return mixed The sanitized value.
-	 */
-	public function sanitize_field( $value, string $type, string $id ) {
-		if ( ! $this->user_can_manage() ) {
-			return false;
-		}
-
-		switch ( $type ) {
-			case 'checkbox':
-			case 'hidden':
-			case 'database':
-				return (int) $value;
-			case 'checkbox_group':
-			case 'user_role_blocklist':
-				if ( ! is_array( $value ) ) {
-					$value = [ $value ];
-				}
-
-				return array_map( 'sanitize_text_field', $value );
-			case 'email':
-				return sanitize_email( $value );
-			case 'url':
-				return esc_url_raw( $value );
-			case 'number':
-				return (int) $value;
-			case 'ip_blocklist':
-				return $this->sanitize_ip_field( $value );
-			case 'email_reports':
-				return $this->sanitize_email_reports( $value );
-			case 'select':
-			case 'text':
-			case 'textarea':
-			default:
-				return sanitize_text_field( $value );
-		}
 	}
 
 	/**
@@ -1596,17 +1888,17 @@ class App {
 	 * Get an array of posts
 	 *
 	 * @param \WP_REST_Request $request The REST API request object.
-	 * @param bool             $ajax_data Optional AJAX data to process.
+	 * @param array             $ajax_data Optional AJAX data to process.
 	 * @return \WP_REST_Response|\WP_Error The response object or error.
 	 */
     //phpcs:ignore
-	public function get_posts( \WP_REST_Request $request, bool $ajax_data = false ) {
+	public function get_posts( \WP_REST_Request $request, array $ajax_data = [] ) {
 		if ( ! $this->user_can_view() ) {
 			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
 		}
 
 		$max_post_count = 100;
-		$data           = $ajax_data ?: $request->get_params();
+		$data           = empty( $ajax_data ) ? $request->get_params() : $ajax_data;
 		$nonce          = $data['nonce'];
 		$search         = isset( $data['search'] ) ? $data['search'] : '';
 
@@ -1619,8 +1911,8 @@ class App {
 			$max_post_count = 1000;
 		}
 
-		$resultArray = [];
-		$args        = [
+		$result_array = [];
+		$args         = [
 			'post_type'   => [ 'post', 'page' ],
 			'numberposts' => $max_post_count,
 			'order'       => 'DESC',
@@ -1630,10 +1922,10 @@ class App {
 				'type' => 'NUMERIC',
 			],
 		];
-		$posts       = get_posts( $args );
+		$posts        = get_posts( $args );
 		foreach ( $posts as $post ) {
-			$page_url      = get_permalink( $post );
-			$resultArray[] = [
+			$page_url       = get_permalink( $post );
+			$result_array[] = [
 				'page_url'   => str_replace( site_url(), '', $page_url ),
 				'page_id'    => $post->ID,
 				'post_title' => $post->post_title,
@@ -1648,7 +1940,7 @@ class App {
 		return new \WP_REST_Response(
 			[
 				'request_success' => true,
-				'posts'           => $resultArray,
+				'posts'           => $result_array,
 				'max_post_count'  => $max_post_count,
 			],
 			200
@@ -1663,6 +1955,8 @@ class App {
 	 * @param mixed  $prev_value The previous value of the option.
 	 * @param string $type The type of the option.
 	 */
+	// $value and $prev_value are mixed types, only supported as of php 8.
+    // phpcs:ignore
 	public function update_for_multisite( string $name, $value, $prev_value, string $type ): void {
 		if ( $name === 'track_network_wide' ) {
 			update_site_option( 'burst_track_network_wide', (bool) $value );

@@ -1,13 +1,15 @@
 import { memo } from 'react';
 import Tooltip from '../components/Common/Tooltip';
-import { LucideProps } from 'lucide-react';
+import { LucideProps, UserRoundCheck, UserRoundPlus } from 'lucide-react';
 import {
   AlertCircle,
   AlertOctagon,
   AlertTriangle,
   Braces,
+  Building,
   Calendar,
   CalendarX,
+  Car,
   Check,
   CircleCheck,
   ChevronDown,
@@ -19,6 +21,7 @@ import {
   CircleOff,
   Clock,
   Copy,
+  Cpu,
   Eye,
   ExternalLink,
   File,
@@ -26,8 +29,9 @@ import {
   FileText,
   FileX,
   Filter,
-  PanelTop,
+  Globe,
   Goal,
+  Grid3x3,
   Hash,
   HelpCircle,
   Infinity,
@@ -36,16 +40,25 @@ import {
   Link,
   Loader,
   LogOut,
+  MapPin,
+  Megaphone,
   Minus,
   Monitor,
   Mouse,
+  PanelTop,
   PieChart,
   Plus,
+  Radio,
   RefreshCw,
+  Search,
+  Settings,
   Smartphone,
   SlidersHorizontal,
+  Star,
   Sun,
   Tablet,
+  Tag,
+  Target,
   Trash,
   Trophy,
   User,
@@ -55,7 +68,16 @@ import {
   XCircle,
   Activity,
   Webhook,
-  Earth
+  Earth, 
+  LogIn,
+  CircleAlert,
+  MapPinned,
+  Milestone,
+  Brain,
+  Frown,
+  Hourglass,
+  Scale,
+
 } from 'lucide-react';
 
 // Color mapping from our custom colors to CSS variables
@@ -65,9 +87,10 @@ const iconColors = {
   yellow: 'var(--rsp-yellow)',
   red: 'var(--rsp-red)',
   blue: 'var(--rsp-blue)',
-  gray: 'var(--rsp-grey-400)',
-  lightgray: 'var(--rsp-grey-350)',
-  white: 'var(--rsp-white)'
+  gray: 'var(--rsp-grey-500)',
+  lightgray: 'var(--rsp-grey-300)',
+  white: 'var(--rsp-white)',
+  gold: 'var(--rsp-gold)',
 };
 
 // Map existing icon names to Lucide icon components
@@ -81,6 +104,10 @@ const iconComponents = {
   warning: AlertTriangle,
   error: AlertCircle,
   times: X,
+  trophy: Trophy,
+  frown: Frown,
+  hourglass: Hourglass,
+  scale: Scale,
   'circle-check': CircleCheck,
   'circle-times': XCircle,
   'chevron-up': ChevronUp,
@@ -133,7 +160,38 @@ const iconComponents = {
   world: Earth,
   filters: Filter,
   referrers: ExternalLink,
-  hook: Webhook
+  hook: Webhook,
+  'log-in': LogIn,
+  'log-out': LogOut,
+  alert: CircleAlert,
+  search: Search,
+  // Filter icons from useFiltersStore
+  bounce: LogOut,
+  user: User,
+  conversion: Target,
+  parameters: Settings,
+  campaign: Megaphone,
+  source: Milestone,
+  medium: Radio,
+  term: Tag,
+  content: FileText,
+  location: MapPin,
+  city: Building,
+  'operating-system': Monitor,
+  browser: Globe,
+  // Filter category icons
+  traffic: Car,
+  behavior: Brain,
+  technology: Cpu,
+  // Star icons
+  'star-filled': Star,
+  'star-outline': Star,
+  'map-pinned': MapPinned,
+  // Additional icons
+  empty: CircleOff,
+  grid: Grid3x3,
+  'user-check': UserRoundCheck,
+  'user-plus': UserRoundPlus,
 };
 
 // Define types for icon names and colors
@@ -181,7 +239,12 @@ const Icon = memo(({
       return <Circle {...iconProps} fill={colorVal} />;
     }
     
-    return <IconComponent {...iconProps} />;
+    // Special handling for star-filled - should be filled
+    if (name === 'star-filled' && IconComponent === Star) {
+      return <Star {...iconProps} fill={colorVal} />;
+    }
+    
+    return <IconComponent className={className} {...iconProps} />;
   };
 
   const handleClick = () => {
@@ -191,7 +254,7 @@ const Icon = memo(({
   };
 
   const iconElement = (
-    <div onClick={handleClick} className='flex items-center justify-center'>
+    <div onClick={() => handleClick() } className='flex items-center justify-center'>
       {renderIcon()}
     </div>
   );

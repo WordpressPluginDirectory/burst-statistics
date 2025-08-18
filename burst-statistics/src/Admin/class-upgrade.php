@@ -20,7 +20,7 @@ class Upgrade {
 	/**
 	 * Constructor
 	 */
-	public function __construct() {
+	public function init(): void {
 		add_action( 'init', [ $this, 'check_upgrade' ], 10, 2 );
 	}
 
@@ -39,6 +39,7 @@ class Upgrade {
 		if ( strpos( $new_version, '#' ) !== false ) {
 			$new_version = substr( $new_version, 0, strpos( $new_version, '#' ) );
 		}
+
 		if ( $prev_version === $new_version ) {
 			return;
 		}
@@ -198,6 +199,13 @@ class Upgrade {
 		if ( $prev_version && version_compare( $prev_version, '2.1.0.', '<' ) ) {
 			if ( defined( 'BURST_PRO' ) ) {
 				update_option( 'burst_activation_time_pro', time(), false );
+			}
+		}
+
+		if ( $prev_version && version_compare( $prev_version, '2.2.3.', '<' ) ) {
+			$mu_plugin = trailingslashit( WPMU_PLUGIN_DIR ) . 'burst_rest_api_optimizer.php';
+			if ( file_exists( $mu_plugin ) ) {
+				wp_delete_file( $mu_plugin );
 			}
 		}
 

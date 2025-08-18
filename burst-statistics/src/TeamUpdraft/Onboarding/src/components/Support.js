@@ -9,19 +9,16 @@ const Support = ({handleManualRetry, isRunning}) => {
         onboardingData,
         getCurrentStepDocumentation,
         getCurrentStepSolutions,
-        getCurrentStep,
     } = useOnboardingStore();
     let documentation = getCurrentStepDocumentation();
 
-    const currentStep = getCurrentStep();
-
     const articleUrl = get_website_url(documentation, {
-        burst_source: currentStep.id,
-        burst_content: 'documentation'
+        utm_source: onboardingData.prefix + '_onboarding',
+        utm_content: 'documentation'
     });
     const supportUrl = get_website_url(onboardingData.support, {
-        burst_source: currentStep.id,
-        burst_content: 'support'
+        utm_source: onboardingData.prefix + '_onboarding',
+        utm_content: 'support'
     });
     const solutions = getCurrentStepSolutions();
     return (

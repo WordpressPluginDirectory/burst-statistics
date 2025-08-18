@@ -29,7 +29,7 @@ return [
 
 		],
 		'msg'         => __( 'Due to your server or website configuration it is not possible to track statistics.', 'burst-statistics' ),
-		'url'         => 'instructions/tracking-error/',
+		'url'         => 'instructions/troubleshoot-tracking/',
 		'plusone'     => true,
 		'icon'        => 'error',
 		'dismissible' => false,
@@ -97,5 +97,28 @@ return [
 		'url'         => 'statistics-including-bounces/',
 		'dismissible' => true,
 		'plusone'     => false,
+	],
+	[
+		'id'          => 'cron',
+		'condition'   => [
+			'type'     => 'serverside',
+			'function' => '!(new \Burst\Admin\Cron\Cron() )->cron_active()',
+		],
+		'msg'         => __( 'Because your cron has not been triggered more than 24 hours, some functionality might not work as expected, like updating the page views counter in a post.', 'burst-statistics' ),
+		'icon'        => 'warning',
+		'url'         => 'instructions/cron-error/',
+		'dismissible' => true,
+	],
+	[
+		'id'          => 'malicous_data_removal',
+		'condition'   => [
+			'type'     => 'serverside',
+			'function' => 'wp_option_burst_removed_malicious_data_count',
+		],
+		// translators: %d is the number of visits detected from a single user in 24 hours.
+		'msg'         => sprintf( __( 'Burst has detected an anomalous number of visits (%d in 24 hours) from one user. As these visits distort your statistics, these have been removed.', 'burst-statistics' ), (int) get_option( 'burst_removed_malicious_data_count', 0 ) ),
+		'icon'        => 'warning',
+		'url'         => 'why-burst-removes-anomalous-visits-and-how-you-can-customize-it/',
+		'dismissible' => true,
 	],
 ];

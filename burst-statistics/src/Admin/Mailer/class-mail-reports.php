@@ -1,6 +1,7 @@
 <?php
 namespace Burst\Admin\Mailer;
 
+use Burst\Admin\Statistics\Query_Data;
 use Burst\Traits\Admin_Helper;
 use Burst\Traits\Helper;
 
@@ -20,7 +21,7 @@ if ( ! class_exists( 'mail_reports' ) ) {
 		/**
 		 * Constructor
 		 */
-		public function __construct() {
+		public function init(): void {
 			add_action( 'burst_every_hour', [ $this, 'maybe_send_report' ] );
 			add_filter( 'burst_do_action', [ $this, 'send_test_report_action' ], 10, 3 );
 		}
@@ -132,12 +133,14 @@ if ( ! class_exists( 'mail_reports' ) ) {
 				$mailer->message = '';
 
 				// last month first and last day.
-				$start = gmdate( 'Y-m-01', strtotime( 'last month' ) );
-				$end   = gmdate( 'Y-m-t', strtotime( 'last month' ) );
+				$first_day_of_current_month = gmdate( 'Y-m-01' );
+				$start                      = gmdate( 'Y-m-01', strtotime( '-1 month', strtotime( $first_day_of_current_month ) ) );
+				$end                        = gmdate( 'Y-m-t', strtotime( $start ) );
 
 				// second to last month first and last day.
-				$compare_start = gmdate( 'Y-m-01', strtotime( '2 months ago' ) );
-				$compare_end   = gmdate( 'Y-m-t', strtotime( '2 months ago' ) );
+				$compare_first_day_of_previous_month = strtotime( '-2 months', strtotime( $first_day_of_current_month ) );
+				$compare_start                       = gmdate( 'Y-m-01', $compare_first_day_of_previous_month );
+				$compare_end                         = gmdate( 'Y-m-t', $compare_first_day_of_previous_month );
 
 				// convert to correct unix.
 				$date_start = \Burst\burst_loader()->admin->statistics::convert_date_to_unix( $start . ' 00:00:00' );
@@ -161,17 +164,19 @@ if ( ! class_exists( 'mail_reports' ) ) {
 				$weekdays = [ 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday' ];
 
 				// last week first and last day based on wp start of the week.
-				$start = gmdate( 'Y-m-d', strtotime( 'last ' . $weekdays[ $week_start ] ) );
-				$end   = gmdate( 'Y-m-d', strtotime( 'last ' . $weekdays[ $week_start ] . ' +6 days' ) );
-				// if end is in the future we need to adjust both start and end to substract 7 days.
-				if ( strtotime( $end ) > time() ) {
-					$start = gmdate( 'Y-m-d', strtotime( 'last ' . $weekdays[ $week_start ] . ' -7 days' ) );
-					$end   = gmdate( 'Y-m-d', strtotime( 'last ' . $weekdays[ $week_start ] . ' -1 days' ) );
-				}
+				// Monday june 30th => previous monday is 24th.
+				// Tuesday july 1st => previous monday should also be june 24th.
+				// So we first get the week_start.
+				$today           = strtotime( 'today' );
+				$this_week_start = strtotime( 'last ' . $weekdays[ $week_start ], $today + DAY_IN_SECONDS );
 
-				// second to last week first and last day based on wp start of the week.
-				$compare_start = gmdate( 'Y-m-d', strtotime( 'last ' . $weekdays[ $week_start ] . ' -14 days' ) );
-				$compare_end   = gmdate( 'Y-m-d', strtotime( 'last ' . $weekdays[ $week_start ] . ' -8 days' ) );
+				// Last week.
+				$start = gmdate( 'Y-m-d', $this_week_start - WEEK_IN_SECONDS );
+				$end   = gmdate( 'Y-m-d', $this_week_start - 1 );
+
+				// Week before last.
+				$compare_start = gmdate( 'Y-m-d', $this_week_start - 2 * WEEK_IN_SECONDS );
+				$compare_end   = gmdate( 'Y-m-d', $this_week_start - WEEK_IN_SECONDS - 1 );
 
 				// convert to correct unix.
 				$date_start = \Burst\burst_loader()->admin->statistics::convert_date_to_unix( $start . ' 00:00:00' );
@@ -197,7 +202,15 @@ if ( ! class_exists( 'mail_reports' ) ) {
 
 			$custom_blocks = $this->get_blocks();
 			foreach ( $custom_blocks as $index => $block ) {
-					$results                 = $this->get_top_results( $date_start, $date_end, $block['type'] );
+					$qd = new Query_Data(
+						[
+							'select'   => $block['select'],
+							'group_by' => $block['group_by'] ?? '',
+							'order_by' => $block['order_by'],
+						]
+					);
+
+					$results                 = $this->get_top_results( $date_start, $date_end, $qd );
 					$completed_block         = [
 						'title' => $block['title'],
 						'table' => self::format_array_as_table( $results ),
@@ -232,46 +245,61 @@ if ( ! class_exists( 'mail_reports' ) ) {
 		 *
 		 * @return array<int, array<int, string>> List of results
 		 */
-		public function get_top_results( int $start_date, int $end_date, string $type ): array {
+		public function get_top_results( int $start_date, int $end_date, Query_Data $qd ): array {
 			global $wpdb;
-			$metrics     = [
-				$type,
-				'pageviews',
-			];
-			$sql         = \Burst\burst_loader()->admin->statistics->get_sql_table(
-				$start_date,
-				$end_date,
-				$metrics,
-				[],
-				$type,
-				'pageviews DESC',
-				apply_filters( 'burst_mail_report_limit', 5 ),
-			);
+
+			if ( in_array( 'page_url', $qd->select, true ) ) {
+				$results = [
+					'header' => [ __( 'Page', 'burst-statistics' ), __( 'Pageviews', 'burst-statistics' ) ],
+				];
+			} elseif ( in_array( 'source', $qd->select, true ) ) {
+				$results = [
+					'header' => [ __( 'Campaign', 'burst-statistics' ), __( 'Conversion rate', 'burst-statistics' ) ],
+				];
+			} else {
+				$results = [
+					'header' => [ __( 'Referrers', 'burst-statistics' ), __( 'Pageviews', 'burst-statistics' ) ],
+				];
+			}
+
+			$qd->limit      = apply_filters( 'burst_mail_report_limit', 5 );
+			$qd->date_start = $start_date;
+			$qd->date_end   = $end_date;
+
+			$sql         = \Burst\burst_loader()->admin->statistics->get_sql_table( $qd );
 			$raw_results = $wpdb->get_results( $sql, ARRAY_A );
 
-			switch ( $type ) {
-				case 'page_url':
-					$header = __( 'Page', 'burst-statistics' );
-					break;
-				case 'source':
-					$header = __( 'Campaign', 'burst-statistics' );
-					break;
-				default:
-					$header = __( 'Referrers', 'burst-statistics' );
-					break;
-			}
-
-			$results = [
-				'header' => [ $header, __( 'Pageviews', 'burst-statistics' ) ],
-			];
-
-			foreach ( $raw_results as $row ) {
-				if ( $type !== 'referrer' || $row[ $type ] !== 'Direct' ) {
-					$results[] = [ $row[ $type ], $row['pageviews'] ];
+			// filter out rows where one of the columns === 'Direct.
+			$raw_results = array_filter(
+				$raw_results,
+				function ( $row ) {
+					return ! in_array( 'Direct', $row, true );
 				}
-			}
+			);
 
-			return $results;
+			$raw_results = array_map(
+				function ( $row ) {
+					foreach ( $row as $key => &$value ) {
+						if ( strpos( $key, '_rate' ) !== false && is_numeric( $value ) ) {
+							$value = round( (float) $value, 1 ) . '%';
+						}
+					}
+					return $row;
+				},
+				$raw_results
+			);
+
+			return $results + array_map(
+				function ( $row ) {
+					if ( count( $row ) <= 2 ) {
+						return $row;
+					}
+					$all_but_last = array_filter( array_slice( $row, 0, -1 ), fn( $v ) => $v !== null && $v !== '' );
+					$last         = end( $row );
+					return [ implode( '-', $all_but_last ), $last ];
+				},
+				$raw_results
+			);
 		}
 
 		/**
@@ -388,7 +416,6 @@ if ( ! class_exists( 'mail_reports' ) ) {
 				$html     .= '<tr style="line-height: 32px">';
 				$first_row = true;
 				foreach ( $row as $column ) {
-
 					if ( $first_row ) {
 						// max 45 characters add ...
 						if ( $column === null ) {

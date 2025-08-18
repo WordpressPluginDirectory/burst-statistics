@@ -12,11 +12,29 @@ const yellowColor = {
   dark: '#555248'
 };
 
+const goldColor = {
+  light: '#FFD700',
+  DEFAULT: '#B8860B',
+  dark: '#8B6508'
+};
+
 const blueColor = {
   light: '#ebf2f9',
   DEFAULT: '#1D3C8F',
   dark: '#142963'
 };
+
+const redColor = {
+  light: '#fbebed',
+  DEFAULT: '#c6273b',
+  dark: '#631a25'
+}
+
+const orangeColor = {
+  light: '#fef5ea',
+  DEFAULT: '#ef8a09',
+  dark: '#631a25'
+}
 
 module.exports = {
   mode: 'jit',
@@ -41,17 +59,11 @@ module.exports = {
       black: '#151615',
       yellow: yellowColor,
       blue: blueColor,
-      red: {
-        light: '#fbebed',
-        DEFAULT: '#c6273b',
-        dark: '#631a25'
-      },
-      orange: {
-        light: '#fef5ea',
-        DEFAULT: '#ef8a09',
-        dark: '#631a25'
-      },
+      red: redColor,
+      orange: orangeColor,
+      gold: goldColor,
       gray: {
+        50: '#F9F9F9',
         100: '#f8f9fa',
         200: '#e9ecef',
         300: '#dee2e6',
@@ -61,7 +73,6 @@ module.exports = {
         700: '#495057',
         800: '#343a40',
         900: '#212529',
-        1000: '#111315'
       },
       wp: {
         blue: '#2271b1',
