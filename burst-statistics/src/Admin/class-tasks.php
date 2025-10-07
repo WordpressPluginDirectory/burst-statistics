@@ -2,7 +2,6 @@
 namespace Burst\Admin;
 
 // don't remove, it is used in the Tasks code.
-use Burst\Admin\Statistics\Summary;
 use Burst\Traits\Admin_Helper;
 use Burst\Traits\Helper;
 
@@ -64,15 +63,61 @@ class Tasks {
 	}
 
 	/**
+	 * Check if this task is permanently dismissed.
+	 */
+	private function is_dismissed_permanently( string $task_id ): bool {
+		$task = $this->get_task_by_id( $task_id );
+		if ( isset( $task['dismiss_permanently'] ) && $task['dismiss_permanently'] ) {
+			$permanently_dismissed = get_option( 'burst_tasks_permanently_dismissed', [] );
+			if ( in_array( $task_id, $permanently_dismissed, true ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Remove a task from the permanently dismissed list.
+	 */
+	public function undismiss_task( string $task_id ): bool {
+		$permanently_dismissed = get_option( 'burst_tasks_permanently_dismissed', [] );
+		$key                   = array_search( $task_id, $permanently_dismissed, true );
+		if ( $key !== false ) {
+			unset( $permanently_dismissed[ $key ] );
+			$permanently_dismissed = array_values( $permanently_dismissed );
+			update_option( 'burst_tasks_permanently_dismissed', $permanently_dismissed, false );
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
 	 * Dismiss a task
 	 */
 	public function dismiss_task( string $task_id ): void {
 		$current_tasks = get_option( 'burst_tasks', [] );
 		if ( in_array( sanitize_title( $task_id ), $current_tasks, true ) ) {
+			do_action( 'burst_dismiss_task', $task_id );
 			$current_tasks = array_diff( $current_tasks, [ $task_id ] );
 			update_option( 'burst_tasks', $current_tasks, false );
 		}
+		$this->maybe_dismiss_permanently( $task_id );
 		delete_transient( 'burst_plusone_count' );
+	}
+
+	/**
+	 * Store task as dismissed permanently
+	 */
+	private function maybe_dismiss_permanently( string $task_id ): void {
+		$task = $this->get_task_by_id( $task_id );
+		if ( isset( $task['dismiss_permanently'] ) && $task['dismiss_permanently'] ) {
+			$permanently_dismissed = get_option( 'burst_tasks_permanently_dismissed', [] );
+			if ( ! in_array( $task_id, $permanently_dismissed, true ) ) {
+				$permanently_dismissed[] = $task_id;
+			}
+			update_option( 'burst_tasks_permanently_dismissed', $permanently_dismissed, false );
+		}
 	}
 
 	/**
@@ -82,7 +127,6 @@ class Tasks {
 		$current_tasks = get_option( 'burst_tasks', [] );
 		return in_array( sanitize_title( $task_id ), $current_tasks, true );
 	}
-
 
 	/**
 	 * Validate tasks
@@ -183,6 +227,10 @@ class Tasks {
 			// get the translated label.
 			$tasks[ $index ]['label'] = $this->get_label( $task['icon'] );
 
+			if ( isset( $task['condition']['type'] ) && $task['condition']['type'] === 'clientside' ) {
+				continue;
+			}
+
 			// remove this option if it's dismissed.
 			if ( ! $this->has_task( $task['id'] ) ) {
 				unset( $tasks[ $index ] );
@@ -225,6 +273,8 @@ class Tasks {
 			'pro'       => __( 'Pro', 'burst-statistics' ),
 			'sale'      => __( 'Sale', 'burst-statistics' ),
 			'offer'     => __( 'Offer', 'burst-statistics' ),
+			'milestone' => __( 'Milestone', 'burst-statistics' ),
+			'insight'   => __( 'Update', 'burst-statistics' ),
 		];
 		return $icon_labels[ $icon ];
 	}
@@ -248,6 +298,19 @@ class Tasks {
 			}
 		}
 		return $unique_tasks;
+	}
+
+	/**
+	 * Get a task by ID.
+	 */
+	public function get_task_by_id( string $task_id ): ?array {
+		$tasks = $this->get_raw_tasks();
+		foreach ( $tasks as $task ) {
+			if ( $task['id'] === $task_id ) {
+				return $task;
+			}
+		}
+		return null;
 	}
 
 

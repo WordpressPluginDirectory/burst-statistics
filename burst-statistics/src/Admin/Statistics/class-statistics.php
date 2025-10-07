@@ -17,7 +17,7 @@ class Statistics {
 	use Sanitize;
 
 	private array $look_up_table_names = [];
-	public $campaign_parameters        = [ 'source', 'medium', 'campaign', 'term', 'content' ];
+	public array $campaign_parameters  = [ 'source', 'medium', 'campaign', 'term', 'content' ];
 	/**
 	 * Constructor
 	 */
@@ -51,11 +51,102 @@ class Statistics {
 			);
 		}
 
-        if ( $this->table_exists( 'burst_parameters') ) {
-            $wpdb->query(
-                "DELETE FROM {$wpdb->prefix}burst_parameters WHERE parameter LIKE '%burst_test_hit%' OR parameter LIKE '%burst_nextpage%'"
-            );
-        }
+		if ( $this->table_exists( 'burst_parameters' ) ) {
+			$wpdb->query(
+				"DELETE FROM {$wpdb->prefix}burst_parameters WHERE parameter LIKE '%burst_test_hit%' OR parameter LIKE '%burst_nextpage%'"
+			);
+		}
+	}
+
+	/**
+	 * Get live traffic data for the dashboard, an array of currently active URLs.
+	 *
+	 * @return array An array of live traffic data objects with properties like active_time, utm_source, page_url, time, time_on_page, uid, page_id, entry, checkout, live, exit.
+	 */
+	public function get_live_traffic_data(): array {
+		$time_start_30m = strtotime( '30 minutes ago' );
+		$time_start_10m = strtotime( '10 minutes ago' );
+		$now            = time();
+		$on_page_offset = apply_filters( 'burst_on_page_offset', 60 );
+		$exit_margin    = 4 * MINUTE_IN_SECONDS;
+
+		// Query last 30 minutes of traffic.
+		$args = [
+			'date_start'    => $time_start_30m,
+			'date_end'      => $now + HOUR_IN_SECONDS,
+			'custom_select' => 'time+time_on_page / 1000 AS active_time, referrer AS utm_source, page_url, time, time_on_page, uid, page_id',
+			'order_by'      => 'active_time DESC',
+			'limit'         => 100,
+		];
+
+		$qd  = new Query_Data( $args );
+		$sql = $this->get_sql_table( apply_filters( 'burst_live_traffic_args', $qd ) );
+
+		global $wpdb;
+		$traffic = $wpdb->get_results( $sql );
+		if ( ! is_array( $traffic ) ) {
+			$traffic = [];
+		}
+		$checkout_id = $this->burst_checkout_page_id();
+
+		// Split traffic into before/within 10m window.
+		$traffic_before_10m = [];
+		foreach ( $traffic as $row ) {
+			if ( (float) $row->time < (float) $time_start_10m ) {
+				$traffic_before_10m[ $row->uid ] = true;
+			}
+		}
+
+		// Create a new set of array with only last 10m of traffic.
+		$traffic_in_last_10m = array_filter(
+			$traffic,
+			function ( $row ) use ( $time_start_10m, $exit_margin, $now, $on_page_offset ) {
+				// Move the custom where from the query to here to get the actual dataset of last 30 minutes.
+				return (float) $row->time >= (float) $time_start_10m && ( (float) $row->active_time + (float) $exit_margin + (float) $on_page_offset ) >= (float) $now;
+			}
+		);
+
+		$entry_marked = [];
+		$exit_marked  = [];
+
+		// Pass 1: Detect entries by iterating oldest → newest (reverse the DESC result).
+		foreach ( array_reverse( $traffic_in_last_10m ) as $row ) {
+			$row->entry    = false;
+			$row->checkout = false;
+
+			if ( ! empty( $row->page_id ) && $row->page_id !== -1 && (int) $row->page_id === $checkout_id ) {
+				$row->checkout = true;
+			}
+
+			// Entry logic: only mark the first (oldest) row in the 10m window per UID.
+			if ( ! isset( $traffic_before_10m[ $row->uid ] ) && ! isset( $entry_marked[ $row->uid ] ) ) {
+				$entry_marked[ $row->uid ] = true;
+				$row->entry                = true;
+			}
+		}
+
+		$seen_uid_for_exit = [];
+
+		// Pass 2: Detect live/exit by iterating newest → oldest.
+		foreach ( $traffic_in_last_10m as $row ) {
+			$row->exit   = false;
+			$should_exit = (float) $row->active_time + $exit_margin < (float) $now;
+
+			// Exit: only mark the most recent row per UID that qualifies.
+			if (
+				$should_exit &&
+				! isset( $exit_marked[ $row->uid ] ) &&
+				! isset( $seen_uid_for_exit[ $row->uid ] )
+			) {
+				$row->exit                = true;
+				$exit_marked[ $row->uid ] = true;
+			}
+
+			// This will ensure that only the last activity is marked as exit and no other entry is marked as exit even if it falls in the exit criteria.
+			$seen_uid_for_exit[ $row->uid ] = false;
+		}
+
+		return $traffic_in_last_10m;
 	}
 
 	/**
@@ -65,14 +156,15 @@ class Statistics {
 		$time_start     = strtotime( '10 minutes ago' );
 		$now            = time();
 		$on_page_offset = apply_filters( 'burst_on_page_offset', 60 );
+		$exit_margin    = 4 * MINUTE_IN_SECONDS;
 
 		// Use enhanced query builder with custom WHERE for complex live visitor logic.
 		$args = [
 			'date_start'    => $time_start,
 			// Add buffer to ensure we don't exclude based on end time.
-			'date_end'      => $now + 3600,
+			'date_end'      => $now + HOUR_IN_SECONDS,
 			'custom_select' => 'COUNT(DISTINCT(uid))',
-			'custom_where'  => "AND ( (time + time_on_page / 1000 + {$on_page_offset}) > {$now})",
+			'custom_where'  => "AND ( (time + time_on_page / 1000 + {$on_page_offset} + {$exit_margin}) > {$now})",
 		];
 		$qd   = new Query_Data( $args );
 		$sql  = $this->get_sql_table( $qd );
@@ -1155,18 +1247,19 @@ class Statistics {
 		$possible_filters_with_prefix = apply_filters(
 			'burst_possible_filters_with_prefix',
 			[
-				'bounces'     => 'session_bounces.bounce',
-				'new_visitor' => 'statistics.first_time_visit',
-				'page_url'    => 'statistics.page_url',
-				'referrer'    => 'statistics.referrer',
-				'device'      => 'statistics.device_id',
-				'browser'     => 'statistics.browser_id',
-				'platform'    => 'statistics.platform_id',
-				'platform_id' => 'statistics.platform_id',
-				'browser_id'  => 'statistics.browser_id',
-				'device_id'   => 'statistics.device_id',
+				'bounces'          => 'session_bounces.bounce',
+				'new_visitor'      => 'statistics.first_time_visit',
+				'page_url'         => 'statistics.page_url',
+				'referrer'         => 'statistics.referrer',
+				'device'           => 'statistics.device_id',
+				'browser'          => 'statistics.browser_id',
+				'platform'         => 'statistics.platform_id',
+				'platform_id'      => 'statistics.platform_id',
+				'browser_id'       => 'statistics.browser_id',
+				'device_id'        => 'statistics.device_id',
+				'entry_exit_pages' => 'entry_exit_pages',
 				// only needed for pages datatable.
-				'goal_id'     => 'goals.goal_id',
+				'goal_id'          => 'goals.goal_id',
 			]
 		);
 
@@ -1193,7 +1286,11 @@ class Statistics {
 			if ( array_key_exists( $filter, $possible_filters_with_prefix ) ) {
 				$qualified_name = $possible_filters_with_prefix[ $filter ];
 				// Special handling for include/exclude values.
-				if ( $value === 'include' ) {
+				if ( $filter === 'entry_exit_pages' && $value !== '' ) {
+					$where_clauses[] = $value === 'entry' ?
+						'statistics.first_time_visit = 1 ' :
+						"statistics.ID IN ( SELECT MAX(ID) FROM {$wpdb->prefix}burst_statistics GROUP BY session_id)";
+				} elseif ( $value === 'include' ) {
 					$where_clauses[] = "{$qualified_name} = 1";
 				} elseif ( $value === 'exclude' ) {
 					$where_clauses[] = "{$qualified_name} = 0";
@@ -1521,7 +1618,7 @@ class Statistics {
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		global $wpdb;
 		$charset_collate = $wpdb->get_charset_collate();
-
+		update_option( 'burst_last_db_upgrade_finished_time', time(), false );
 		// Create tables without indexes first.
 		$tables = [
 			'burst_statistics'       => "CREATE TABLE {$wpdb->prefix}burst_statistics (
