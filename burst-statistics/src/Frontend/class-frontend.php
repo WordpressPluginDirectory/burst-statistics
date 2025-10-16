@@ -101,9 +101,10 @@ class Frontend {
 	private function get_current_page_identifier(): array {
 		// All post types with ID (posts, pages, custom post types).
 		if ( is_singular() || ( is_front_page() && is_page() ) ) {
+			$post_id = get_queried_object_id();
 			return [
-				'ID'   => get_the_ID(),
-				'type' => get_post_type( get_the_ID() ),
+				'ID'   => $post_id,
+				'type' => get_post_type( $post_id ),
 			];
 		}
 
@@ -423,11 +424,13 @@ class Frontend {
 		}
 
 		global $wpdb;
-		$sql = $wpdb->prepare(
+		$date_start = apply_filters( 'burst_pageviews_date_start', strtotime( '-30 days' ) );
+		$sql        = $wpdb->prepare(
 			"SELECT COUNT(*) as total_views
          FROM {$wpdb->prefix}burst_statistics
-         WHERE page_id = %d",
-			$post_id
+         WHERE page_id = %d AND time > %d",
+			$post_id,
+			$date_start
 		);
 
 		$views = (int) $wpdb->get_var( $sql );
