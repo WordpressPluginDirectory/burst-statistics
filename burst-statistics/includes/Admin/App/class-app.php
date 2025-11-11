@@ -4,19 +4,16 @@ namespace Burst\Admin\App;
 use Burst\Admin\App\Fields\Fields;
 use Burst\Admin\App\Menu\Menu;
 use Burst\Admin\Burst_Onboarding\Burst_Onboarding;
-use Burst\Pro\Pro_Statistics;
-use Burst\TeamUpdraft\Installer\Installer;
 use Burst\Admin\Statistics\Goal_Statistics;
-use Burst\Admin\Statistics\Statistics;
 use Burst\Admin\Tasks;
 use Burst\Frontend\Endpoint;
 use Burst\Frontend\Goals\Goal;
 use Burst\Frontend\Goals\Goals;
+use Burst\TeamUpdraft\Installer\Installer;
 use Burst\Traits\Admin_Helper;
 use Burst\Traits\Helper;
-use Burst\Traits\Save;
 use Burst\Traits\Sanitize;
-use Burst\TeamUpdraft\Onboarding\Onboarding;
+use Burst\Traits\Save;
 use function Burst\burst_loader;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -48,6 +45,7 @@ class App {
 		add_action( 'rest_api_init', [ $this, 'settings_rest_route' ], 8 );
 		add_filter( 'burst_localize_script', [ $this, 'extend_localized_settings_for_dashboard' ], 10, 1 );
 		add_action( 'burst_weekly', [ $this, 'weekly_clear_referrers_table' ] );
+		add_action( 'burst_daily', [ $this, 'maybe_update_plugin_path' ] );
 		$this->menu   = new Menu();
 		$this->fields = new Fields();
 		$onboarding   = new Burst_Onboarding();
@@ -57,13 +55,29 @@ class App {
 	}
 
 	/**
+	 * Check plugin path daily and maybe update the path if it is changed.
+	 */
+	public function maybe_update_plugin_path(): void {
+		$stored_path  = get_option( 'burst_plugin_path', '' );
+		$current_path = BURST_PATH;
+		if ( $stored_path !== $current_path ) {
+			update_option( 'burst_plugin_path', $current_path, true );
+		}
+	}
+
+	/**
 	 * After activation, redirect the user to the settings page.
 	 */
 	public function maybe_redirect_to_settings_page(): void {
 		// not processing form data, only a conditional redirect, which is available only temporarily.
-        // phpcs:ignore
+		// phpcs:ignore
 		if ( get_transient( 'burst_redirect_to_settings_page' ) && ( ! isset( $_GET['page'] ) || $_GET['page'] !== 'burst' ) ) {
 			delete_transient( 'burst_redirect_to_settings_page' );
+			// we don't redirect when installed through the onboarding of another plugin.
+			if ( get_option( 'teamupdraft_installation_source_burst-statistics' ) ) {
+				return;
+			}
+
 			wp_safe_redirect( $this->admin_url( 'burst' ) );
 			exit;
 		}
@@ -89,7 +103,7 @@ class App {
 		 * Ensures the WordPress admin menu stays in sync with the React app navigation
 		 */
 		// not processing form data, only a conditional script on the burst page.
-        // phpcs:ignore
+		// phpcs:ignore
 		if ( isset( $_GET['page'] ) && $_GET['page'] === 'burst' ) {
 			?>
 			<script>
@@ -200,13 +214,7 @@ class App {
 	 * @return array<int, array<string, mixed>> Menu configuration array
 	 */
 	private function get_menu_config(): array {
-		$config_file = BURST_PATH . 'includes/Admin/App/config/menu.php';
-		if ( ! file_exists( $config_file ) ) {
-			return [];
-		}
-
-		$menu_config = include $config_file;
-		return is_array( $menu_config ) ? $menu_config : [];
+		return $this->menu->get();
 	}
 
 	/**
@@ -244,7 +252,7 @@ class App {
 	/**
 	 * Add "Upgrade to Pro" menu item if not Pro version
 	 */
-    // phpcs:disable
+	// phpcs:disable
 	private function add_upgrade_menu_item(): void {
 		if ( defined( 'BURST_PRO' ) ) {
 			return;
@@ -270,7 +278,7 @@ class App {
 			$submenu['burst'][ $highest_index ][4] .= ' ' . $class;
 		}
 	}
-    // phpcs:enable
+	// phpcs:enable
 
 	/**
 	 * Enqueue scripts for the plugin
@@ -383,18 +391,20 @@ class App {
 		}
 
 		// --- Parse GET ---
-        // phpcs:ignore
-        if ( isset( $_GET['rest_action'] ) ) {
-            // phpcs:ignore
-            $action = sanitize_text_field( $_GET['rest_action'] );
-			if ( strpos( $action, 'burst/v1/data/' ) !== false ) {
+		// phpcs:ignore
+		if ( isset( $_GET['rest_action'] ) ) {
+			// phpcs:ignore
+			$action = sanitize_text_field( $_GET['rest_action'] );
+			if ( str_contains( $action, 'burst/v1/data/ecommerce/' ) ) {
+				$data_type = strtolower( str_replace( 'burst/v1/data/ecommerce/', '', $action ) );
+			} elseif ( str_contains( $action, 'burst/v1/data/' ) ) {
 				$data_type = strtolower( str_replace( 'burst/v1/data/', '', $action ) );
 			}
 		}
 
 		// --- Collect GET params ---
-        // phpcs:ignore
-        $get_params = $_GET;
+		// phpcs:ignore
+		$get_params = $_GET;
 		unset( $get_params['rest_action'] );
 
 		// --- Parse POST body, if present ---
@@ -517,41 +527,41 @@ class App {
 			.toplevel_page_burst .notice {
 				display: none;
 			}
-			
+
 			/* Base styles for the Burst statistics container */
 			#burst-statistics {
 				/* Add any base styles for the container */
 			}
-			
+
 			/* Background colors */
 			#burst-statistics .bg-white {
 				--tw-bg-opacity: 1;
 				background-color: rgb(255 255 255 / var(--tw-bg-opacity));
 			}
-			
+
 			#burst-statistics .bg-gray-200 {
 				--tw-bg-opacity: 1;
 				background-color: rgb(229 231 235 / var(--tw-bg-opacity));
 			}
-			
+
 			/* Layout */
 			#burst-statistics .mx-auto {
 				margin-left: auto;
 				margin-right: auto;
 			}
-			
+
 			#burst-statistics .flex {
 				display: flex;
 			}
-			
+
 			#burst-statistics .grid {
 				display: grid;
 			}
-			
+
 			#burst-statistics .grid-cols-12 {
 				grid-template-columns: repeat(12, minmax(0, 1fr));
 			}
-			
+
 			#burst-statistics .grid-rows-5 {
 				grid-template-rows: repeat(5, minmax(0, 1fr));
 			}
@@ -567,103 +577,103 @@ class App {
 			#burst-statistics .row-span-2 {
 				grid-row: span 2 / span 2;
 			}
-			
+
 			#burst-statistics .items-center {
 				align-items: center;
 			}
-			
+
 			/* Spacing */
 			#burst-statistics .gap-5 {
 				gap: 1.25rem;
 			}
-			
+
 			#burst-statistics .px-5 {
 				padding-left: 1.25rem;
 				padding-right: 1.25rem;
 			}
-			
+
 			#burst-statistics .py-2 {
 				padding-top: 0.5rem;
 				padding-bottom: 0.5rem;
 			}
-			
+
 			#burst-statistics .py-6 {
 				padding-top: 1.5rem;
 				padding-bottom: 1.5rem;
 			}
-			
+
 			#burst-statistics .p-5 {
 				padding: 1.25rem;
 			}
-			
+
 			#burst-statistics .m-5 {
 				margin: 1.25rem;
 			}
-			
+
 			#burst-statistics .mb-5 {
 				margin-bottom: 1.25rem;
 			}
-			
+
 			#burst-statistics .ml-2 {
 				margin-left: 0.5rem;
 			}
-			
+
 			/* Sizing */
 			#burst-statistics .h-6 {
 				height: 1.5rem;
 			}
-			
+
 			#burst-statistics .h-11 {
 				height: 2.75rem;
 			}
-			
+
 			#burst-statistics .w-auto {
 				width: auto;
 			}
-			
+
 			#burst-statistics .w-1\/2 {
 				width: 50%;
 			}
-			
+
 			#burst-statistics .w-4\/5 {
 				width: 80%;
 			}
-			
+
 			#burst-statistics .w-5\/6 {
 				width: 83.333333%;
 			}
-			
+
 			#burst-statistics .w-full {
 				width: 100%;
 			}
-			
+
 			#burst-statistics .min-h-full {
 				min-height: 100%;
 			}
-			
+
 			#burst-statistics .max-w-screen-2xl {
 				max-width: 1600px;
 			}
-			
+
 			/* Effects */
 			#burst-statistics .shadow-md {
 				--tw-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
 				--tw-shadow-colored: 0 4px 6px -1px var(--tw-shadow-color), 0 2px 4px -2px var(--tw-shadow-color);
 				box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 			}
-			
+
 			#burst-statistics .rounded-md {
 				border-radius: 0.375rem;
 			}
-			
+
 			#burst-statistics .rounded-xl {
 				border-radius: 0.75rem;
 			}
-			
+
 			#burst-statistics .animate-pulse {
 				animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 			}
-			
+
 			@keyframes pulse {
 				0%, 100% {
 					opacity: 1;
@@ -672,7 +682,7 @@ class App {
 					opacity: .5;
 				}
 			}
-			
+
 			#burst-statistics .blur-sm {
 				--tw-blur: blur(4px);
 				filter: var(--tw-blur);
@@ -682,7 +692,7 @@ class App {
 			#burst-statistics .border-b-4 {
 				border-bottom-width: 4px;
 			}
-			
+
 			#burst-statistics .border-transparent {
 				border-color: transparent;
 			}
@@ -890,6 +900,21 @@ class App {
 
 		register_rest_route(
 			'burst/v1',
+			'data/ecommerce/(?P<type>[a-z\_\-]+)',
+			[
+				'methods'             => 'GET',
+				'callback'            => function ( \WP_REST_Request $request ) {
+					$request->set_param( 'is_ecommerce', true );
+					return $this->get_data( $request );
+				},
+				'permission_callback' => function () {
+					return $this->user_can_view();
+				},
+			]
+		);
+
+		register_rest_route(
+			'burst/v1',
 			'data/(?P<type>[a-z\_\-]+)',
 			[
 				'methods'             => 'GET',
@@ -1001,7 +1026,8 @@ class App {
 				break;
 			case 'get_filter_options':
 				$data_type = isset( $data['data_type'] ) ? sanitize_title( $data['data_type'] ) : '';
-				$data      = $this->get_filter_options( $data_type );
+				$search    = isset( $data['search'] ) ? sanitize_text_field( $data['search'] ) : '';
+				$data      = $this->get_filter_options( $data_type, $search );
 				break;
 			default:
 				$data = apply_filters( 'burst_do_action', [], $action, $data );
@@ -1024,9 +1050,10 @@ class App {
 	 * Get advanced filter options.
 	 *
 	 * @param string $data_type The specific data type to return (devices, browsers, platforms, countries, pages, referrers, campaigns).
+	 * @param string $search The search string, optional.
 	 * @return array the filter options.
 	 */
-	private function get_filter_options( string $data_type ): array {
+	private function get_filter_options( string $data_type, string $search = '' ): array {
 		if ( ! $this->user_can_view() ) {
 			return [];
 		}
@@ -1041,7 +1068,16 @@ class App {
 				'message' => 'Invalid data type',
 			];
 		}
+		$where_queries = [];
+		$search        = sanitize_text_field( $search );
+		if ( strlen( $search ) > 0 ) {
+			$like          = '%' . $wpdb->esc_like( $search ) . '%';
+			$where_queries = [
+				'pages' => $wpdb->prepare( 'WHERE page_url LIKE %s ', $like ),
+			];
+		}
 
+		$where = $where_queries[ $data_type ] ?? '';
 		// Define data type queries.
 		$queries = [
 			'devices'   => "SELECT MIN(ID) as ID, name FROM {$wpdb->prefix}burst_devices GROUP BY name ORDER BY name ASC",
@@ -1049,7 +1085,7 @@ class App {
 			'platforms' => "SELECT MIN(ID) as ID, name FROM {$wpdb->prefix}burst_platforms GROUP BY name ORDER BY name ASC",
 			'states'    => "SELECT DISTINCT state AS name FROM {$wpdb->prefix}burst_locations ORDER BY name ASC",
 			'cities'    => "SELECT DISTINCT city AS name FROM {$wpdb->prefix}burst_locations ORDER BY name ASC",
-			'pages'     => "SELECT page_url as name FROM {$wpdb->prefix}burst_statistics GROUP BY page_url ORDER BY COUNT(*) DESC",
+			'pages'     => "SELECT page_url as name FROM {$wpdb->prefix}burst_statistics $where GROUP BY page_url HAVING COUNT(*) > 1 ORDER BY COUNT(*) DESC limit 1000",
 			'campaigns' => "SELECT DISTINCT campaign AS name FROM {$wpdb->prefix}burst_campaigns ORDER BY name ASC",
 			'sources'   => "SELECT DISTINCT source AS name FROM {$wpdb->prefix}burst_campaigns ORDER BY name ASC",
 			'mediums'   => "SELECT DISTINCT medium AS name FROM {$wpdb->prefix}burst_campaigns ORDER BY name ASC",
@@ -1072,7 +1108,7 @@ class App {
 				$raw_data
 			);
 		} elseif ( $data_type === 'referrers' ) {
-			$raw_data = $this->get_referrer_options();
+			$raw_data = $this->get_referrer_options( $search );
 			$raw_data = array_map(
 				fn( $value ) => [
 					'ID'   => $value['name'],
@@ -1159,11 +1195,16 @@ class App {
 	/**
 	 * Get referrer options for the advanced filter. The table is cleared weekly, to ensure up to date data.
 	 *
+	 * @param string $search the optional search string.
 	 * @return array the referrer options.
 	 */
-	private function get_referrer_options(): array {
+	private function get_referrer_options( string $search = '' ): array {
 		global $wpdb;
-		$referrers = $wpdb->get_results( "SELECT name FROM {$wpdb->prefix}burst_referrers ORDER BY ID ASC", ARRAY_A );
+
+		$search    = sanitize_text_field( $search );
+		$like      = '%' . $wpdb->esc_like( $search ) . '%';
+		$where     = strlen( $search ) > 0 ? $wpdb->prepare( 'WHERE name LIKE %s ', $like ) : '';
+		$referrers = $wpdb->get_results( "SELECT name FROM {$wpdb->prefix}burst_referrers $where ORDER BY ID ASC limit 1000", ARRAY_A );
 		if ( empty( $referrers ) ) {
 			$sql = "INSERT IGNORE INTO {$wpdb->prefix}burst_referrers (name)
                     SELECT domain
@@ -1213,7 +1254,8 @@ class App {
 	 * Get plugin data for the "Other Plugins" section.
 	 *
 	 * @param string $slug Optional plugin slug to retrieve a single plugin entry.
-	 * @return array<string, mixed>|array<int, array<string, mixed>> A single plugin data array if $slug is provided and matches, or a list of plugin data arrays otherwise.
+	 * @return array<string, mixed>|array<int, array<string, mixed>> A single plugin data array if $slug is provided
+	 *                       and matches, or a list of plugin data arrays otherwise.
 	 */
 	public function other_plugins_data( string $slug = '' ): array {
 		if ( ! $this->user_can_view() ) {
@@ -1272,6 +1314,7 @@ class App {
 
 		$type = $processed['type'];
 		$args = $this->sanitize_request_args( $request, $type );
+		$args = apply_filters( 'burst_get_data_request_args', $args, $type, $request );
 
 		switch ( $type ) {
 			case 'live-visitors':
@@ -1926,7 +1969,7 @@ class App {
 			$json_path = __DIR__ . '/posts-fallback.json';
 		}
 
-        // phpcs:disable WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+		// phpcs:disable WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
 		$json = file_get_contents( $json_path );
 		// decode the json file.
 		$decoded = json_decode( $json, true );
@@ -1988,7 +2031,7 @@ class App {
 	 * @param array             $ajax_data Optional AJAX data to process.
 	 * @return \WP_REST_Response|\WP_Error The response object or error.
 	 */
-    //phpcs:ignore
+	//phpcs:ignore
 	public function get_posts( \WP_REST_Request $request, array $ajax_data = [] ) {
 		if ( ! $this->user_can_view() ) {
 			return new \WP_Error( 'rest_forbidden', 'You do not have permission to perform this action.', [ 'status' => 403 ] );
@@ -2063,7 +2106,7 @@ class App {
 	 * @param string $type The type of the option.
 	 */
 	// $value and $prev_value are mixed types, only supported as of php 8.
-    // phpcs:ignore
+	// phpcs:ignore
 	public function update_for_multisite( string $name, $value, $prev_value, string $type ): void {
 		if ( $name === 'track_network_wide' ) {
 			update_site_option( 'burst_track_network_wide', (bool) $value );

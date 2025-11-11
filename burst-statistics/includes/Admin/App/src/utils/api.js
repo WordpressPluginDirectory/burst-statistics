@@ -2,6 +2,8 @@ import apiFetch from '@wordpress/api-fetch';
 import { __ } from '@wordpress/i18n';
 import { toast } from 'react-toastify';
 
+/* global burst_settings */
+
 const usesPlainPermalinks = () => {
   return -1 !== burst_settings.site_url.indexOf( '?' );
 };
@@ -223,7 +225,8 @@ const getBlock = ( block ) =>
 
 export const doAction = ( action, data = {}) =>
   makeRequest( `burst/v1/do_action/${action}`, 'POST', {
-    action_data: data
+    action_data: data,
+	should_load_ecommerce: burst_settings.shouldLoadEcommerce || false,
   }).then( ( response ) => {
     return Object.prototype.hasOwnProperty.call( response, 'data' ) ? response.data : [];
   });
@@ -279,7 +282,7 @@ const buildQueryString = ( params ) => {
 export const getData = async( type, startDate, endDate, range, args = {}) => {
 
   // Extract filters and metrics from args if they exist
-  const { filters, metrics, group_by, currentView } = args;
+  const { filters, metrics, group_by, currentView, selectedPages } = args;
 
   // Combine all query parameters
   const queryParams = {
@@ -287,11 +290,13 @@ export const getData = async( type, startDate, endDate, range, args = {}) => {
     date_end: endDate,
     date_range: range,
     nonce: burst_settings.burst_nonce,
+    should_load_ecommerce: burst_settings.shouldLoadEcommerce || false,
     goal_id: args.goal_id,
     token: Math.random()// nosemgrep
       .toString( 36 )
       .replace( /[^a-z]+/g, '' )
       .substr( 0, 5 ),
+	...( selectedPages && { selected_pages: selectedPages } ), // type is string
     ...( filters && { filters }), // type is object
     ...( metrics && { metrics }), // type is array
     ...( group_by && { group_by }), // type is array
