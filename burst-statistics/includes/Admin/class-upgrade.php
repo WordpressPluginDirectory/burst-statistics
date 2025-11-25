@@ -237,9 +237,17 @@ class Upgrade {
 			burst_reinstall_rest_api_optimizer();
 		}
 
-		if ( $prev_version && version_compare( $prev_version, '3.0.1', '<' ) ) {
+		if ( $prev_version && version_compare( $prev_version, '3.0.2', '<' ) ) {
 			update_option( 'burst_is_multi_domain', false );
-			burst_reinstall_rest_api_optimizer();
+            $plugin_activated_time = get_option( 'burst_activation_time', 0 );
+            $cutoff_date          = strtotime( '2025-11-24 00:00:00' );
+            if ( $plugin_activated_time > 0 && $plugin_activated_time < $cutoff_date ) {
+                if ( ! defined( 'BURST_PRO' ) ) {
+                    \Burst\burst_loader()->admin->tasks->undismiss_task( 'bf_notice' );
+                    \Burst\burst_loader()->admin->tasks->undismiss_task( 'cm_notice' );
+                    \Burst\burst_loader()->admin->tasks->schedule_task_validation();
+                }
+            }
 		}
 
 		$admin = new Admin();

@@ -6,7 +6,7 @@ Requires at least: 6.4
 License: GPL2
 Requires PHP: 8.0
 Tested up to: 6.8
-Stable tag: 3.0.0
+Stable tag: 3.0.2
 
 Self-hosted, privacy-friendly stats for WordPress. Simple interface, no setup. Get detailed analytics with Burst Statistics.
 
@@ -97,6 +97,12 @@ Absolutely! Both free and premium plugin can be managed with composer. Read the 
 We value your feedback. You can [submit a support request on the WordPress forums](https://wordpress.org/support/plugin/burst-statistics/), and we will respond promptly.
 
 == Change log ==
+= 3.0.2 =
+* November 25th
+* Fix: some notices were incorrectly dismissed during validation. 
+* Improvement: added automated test for hook goals.
+* Improvement: added automated test for archiving restoration.
+
 = 3.0.0 =
 * November 11th 2025
 * Fix: compability with unknown plugin, allowing null value in get_timerange_dropdown() on WooCommerce products overview, props @tegid
