@@ -106,10 +106,8 @@ class Tasks {
 			do_action( 'burst_dismiss_task', $task_id );
 			$current_tasks = array_diff( $current_tasks, [ $task_id ] );
 			update_option( 'burst_tasks', $current_tasks, false );
-
-            // only dismiss permanently if the task exists in the tasks array.
-            $this->maybe_dismiss_permanently( $task_id );
 		}
+		$this->maybe_dismiss_permanently( $task_id );
 		delete_transient( 'burst_plusone_count' );
 	}
 

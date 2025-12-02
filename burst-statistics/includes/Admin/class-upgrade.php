@@ -7,7 +7,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 use Burst\Admin\Capability\Capability;
 use Burst\Admin\DB_Upgrade\DB_Upgrade;
-use Burst\Admin\Statistics\Summary;
 use Burst\Traits\Admin_Helper;
 use Burst\Traits\Save;
 use Burst\Frontend\Goals\Goals;
@@ -127,10 +126,6 @@ class Upgrade {
 		}
 
 		if ( $prev_version
-			&& version_compare( $prev_version, '1.6.0', '<' ) ) {
-			( new Summary() )->restart_update_summary_table_alltime();
-		}
-		if ( $prev_version
 			&& version_compare( $prev_version, '1.6.1', '<' ) ) {
 			// add the admin to the email reports mailing list.
 			$mailinglist = burst_get_option( 'email_reports_mailinglist' );
@@ -237,18 +232,30 @@ class Upgrade {
 			burst_reinstall_rest_api_optimizer();
 		}
 
-		if ( $prev_version && version_compare( $prev_version, '3.0.2', '<' ) ) {
+		if ( $prev_version && version_compare( $prev_version, '3.0.1', '<' ) ) {
 			update_option( 'burst_is_multi_domain', false );
-            $plugin_activated_time = get_option( 'burst_activation_time', 0 );
-            $cutoff_date          = strtotime( '2025-11-24 00:00:00' );
-            if ( $plugin_activated_time > 0 && $plugin_activated_time < $cutoff_date ) {
-                if ( ! defined( 'BURST_PRO' ) ) {
-                    \Burst\burst_loader()->admin->tasks->undismiss_task( 'bf_notice' );
-                    \Burst\burst_loader()->admin->tasks->undismiss_task( 'cm_notice' );
-                    \Burst\burst_loader()->admin->tasks->schedule_task_validation();
-                }
-            }
+			burst_reinstall_rest_api_optimizer();
 		}
+
+        // phpcs:disable
+        if ( $prev_version && version_compare( $prev_version, '3.1.0', '<' ) ) {
+            global $wpdb;
+            $sql = "DROP TABLE IF EXISTS {$wpdb->prefix}burst_summary";
+            $wpdb->query( $sql );
+
+            $stats_table = "{$wpdb->prefix}burst_statistics";
+            $known_table = "{$wpdb->prefix}burst_known_uids";
+
+            // One-time fill from existing data
+            $wpdb->query("
+                INSERT INTO $known_table (uid, first_seen, last_seen)
+                SELECT uid, MIN(time) as first_seen, MAX(time) as last_seen
+                FROM $stats_table
+                WHERE time >= UNIX_TIMESTAMP(NOW() - INTERVAL 1 MONTH)
+                GROUP BY uid
+            ");
+        }
+        //phpcs:enable
 
 		$admin = new Admin();
 		$admin->run_table_init_hook();
