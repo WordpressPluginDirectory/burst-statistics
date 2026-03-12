@@ -1,15 +1,16 @@
-import React from "react";
-import { __ } from "@wordpress/i18n";
-import { burst_get_website_url } from "@/utils/lib";
-import useLicenseData from "@/hooks/useLicenseData";
-import Icon from "@/utils/Icon";
+import React from 'react';
+import {__} from '@wordpress/i18n';
+import {burst_get_website_url} from '@/utils/lib';
+import useLicenseData from '@/hooks/useLicenseData';
+import Icon from '@/utils/Icon';
 
 interface ProBadgeProps {
-  id?: string;
-  className?: string;
-  label?: string;
-  url?: string;
-  type?: string; //icon or badge
+    id?: string;
+    className?: string;
+    label?: string;
+    url?: string;
+    type?: string; //icon or badge
+    hasLink?: boolean;
 }
 
 /**
@@ -17,72 +18,69 @@ interface ProBadgeProps {
  *
  * A reusable component to display a clickable "Pro" badge.
  *
- * @param props - Component props
- * @param props.id - ID for tracking purposes (optional)
+ * @param props           - Component props
+ * @param props.id        - ID for tracking purposes (optional)
  * @param props.className - Additional classes to apply to the badge (optional)
- * @param props.label - Label instead of Burst Pro (optional)
- * @param props.url - URL to navigate to when clicked (optional)
- * @param props.type - URL to navigate to when clicked (optional)
- * @returns JSX.Element
+ * @param props.label     - Label instead of Burst Pro (optional)
+ * @param props.url       - URL to navigate to when clicked (optional)
+ * @param props.type      - URL to navigate to when clicked (optional)
+ * @param props.hasLink      - If the result should be a link or not (optional)
+ * @return JSX.Element
  */
 const ProBadge: React.FC<ProBadgeProps> = ({
-  id='',
-  className = "",
-  url,
-  label,
-  type = "badge"
-}) => {
+                                               id = '',
+                                               className = '',
+                                               url,
+                                               label,
+                                               type = 'badge',
+                                               hasLink = true
+                                           }) => {
+    const {isTrial, isLicenseValidFor} = useLicenseData();
 
-  const {
-    isTrial,
-    licenseInactive,
-      isLicenseValidFor,
-  } = useLicenseData();
+    if ( ! isTrial && isLicenseValidFor( id ) ) {
+        return null;
+    }
+    let finalUrl = url;
+    if ( ! finalUrl ) {
+        finalUrl = burst_get_website_url( 'pricing', {
+            utm_source: 'pro-badge',
+            utm_content: id || 'empty-content'
+        });
+    }
 
-  if ( licenseInactive && !isTrial ) {
-    // return null;
-  }
+    const altText = isTrial ?
+        __( 'Enjoy full access for the remainder of your trial.', 'burst-statistics' ) :
+        __( 'Unlock this feature with Pro. Upgrade for more insights and control.', 'burst-statistics' );
 
-  if ( !isTrial && isLicenseValidFor(id)) {
-    return null;
-  }
+    if ( 'icon' === type ) {
+        const iconContent = <Icon color="green" name="sprout" size={14} strokeWidth={1.5}/>;
+        const iconClassName = 'inline-flex items-center px-0.5 py-0.5 inline-flex rounded-full bg-green-light border border-gray-100 transition-colors';
 
-  let finalUrl = url;
-  if (!finalUrl) {
-    finalUrl = burst_get_website_url("pricing", {
-      utm_source: "pro-badge",
-      utm_content: id || "empty-content",
-    });
-  }
+        return hasLink ? (
+            <a href={finalUrl} className={iconClassName} title={altText}>
+                {iconContent}
+            </a>
+        ) : (
+            <div className={iconClassName} title={altText}>
+                {iconContent}
+            </div>
+        );
+    }
 
-  if ( type === 'icon' ) {
-    return (
-        <a
-            href={finalUrl}
-            className={`inline-flex items-center px-0.5 py-0.5 inline-flex rounded-full bg-green-light border border-gray-100 transition-colors`}
-            title={__(
-                "Unlock this feature with Pro. Upgrade for more insights and control.",
-                "burst-statistics",
-            )}
-        >
-            <Icon color='green' name="sprout" size={14} strokeWidth={1.5}/>
+    const badgeClassName = `inline-flex items-center rounded bg-primary px-2 py-0.5 text-xs font-medium text-white transition-colors ${className}`;
+
+    // Not translated because it's a brand name
+    const badgeContent = label || 'Burst Pro';
+
+    return hasLink ? (
+        <a href={finalUrl} className={badgeClassName} title={altText}>
+            {badgeContent}
         </a>
+    ) : (
+        <div className={badgeClassName} title={altText}>
+            {badgeContent}
+        </div>
     );
-  }
-
-  return (
-    <a
-      href={finalUrl}
-      className={`inline-flex items-center rounded bg-primary px-2 py-0.5 text-xs font-medium text-white transition-colors ${className}`}
-      title={__(
-        "Unlock this feature with Pro. Upgrade for more insights and control.",
-        "burst-statistics",
-      )}
-    >
-      {/* Not translated because it's a brand name */}
-      {label || 'Burst Pro'}
-    </a>
-  );
 };
 
 export default ProBadge;

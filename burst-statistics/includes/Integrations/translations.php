@@ -12,6 +12,10 @@ return [
 					'id'    => 'elementor_pro_forms_form_submitted',
 					'title' => 'Elementor - ' . __( 'Form Submission', 'burst-statistics' ),
 				],
+				[
+					'id'    => 'submit_button_click',
+					'title' => 'Elementor - ' . __( 'Form Submission', 'burst-statistics' ),
+				],
 			],
 	],
 	'woocommerce'                      => [
@@ -144,6 +148,20 @@ return [
 					'id'    => 'wsf_submit',
 					'title' => 'WS Forms - ' . __( 'Submit form', 'burst-statistics' ),
 
+				],
+			],
+	],
+	'fluentform'                       => [
+		'goals' =>
+			[
+				[
+					'id'    => 'fluentform_submission_inserted',
+					'title' => 'Fluent Forms - ' . __( 'Submit form', 'burst-statistics' ),
+
+				],
+				[
+					'id'    => 'fluentforms_click_submit',
+					'title' => 'Fluent Forms - ' . __( 'Submit form', 'burst-statistics' ),
 				],
 			],
 	],

@@ -31,6 +31,11 @@ return [
 					'type' => 'hook',
 					'hook' => 'elementor_pro/forms/form_submitted',
 				],
+				[
+					'id'       => 'submit_button_click',
+					'type'     => 'clicks',
+					'selector' => '.elementor-field-type-submit .elementor-button',
+				],
 			],
 	],
 	// eCommerce plugins.
@@ -207,6 +212,23 @@ return [
 					'id'       => 'wpforms_click_submit',
 					'type'     => 'clicks',
 					'selector' => '.wpforms-submit',
+				],
+			],
+	],
+	'fluentform'                       => [
+		'constant_or_function' => 'FLUENTFORM',
+		'label'                => 'Fluent Forms',
+		'goals'                =>
+			[
+				[
+					'id'   => 'fluentform_submission_inserted',
+					'type' => 'hook',
+					'hook' => 'fluentform/submission_inserted',
+				],
+				[
+					'id'       => 'fluentforms_click_submit',
+					'type'     => 'clicks',
+					'selector' => '.ff-btn-submit',
 				],
 			],
 	],

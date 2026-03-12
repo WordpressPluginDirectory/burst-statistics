@@ -48,10 +48,25 @@ class Onboarding {
 		$this->onboarding_path = __DIR__;
 		$this->onboarding_url  = plugin_dir_url( __FILE__ );
 
+		$this->maybe_flush_rewrite_rules();
+
 		add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
 		add_action( 'wp_ajax_' . $this->prefix . '_onboarding_rest_api_fallback', [ $this, 'rest_api_fallback' ] );
 		add_action( "admin_print_scripts-{$this->page_hook_suffix}", [ $this, 'enqueue_onboarding_scripts' ], 1 );
 		add_action( 'admin_footer', [ $this, 'add_root_html' ] );
+	}
+
+	/**
+	 * Flush rewrite rules on first onboarding initialization
+	 * As we're registering the rest route conditionally, we need to flush the rewrite rules once.
+	 */
+	private function maybe_flush_rewrite_rules(): void {
+		$flushed_option = $this->prefix . '_onboarding_flushed_rewrite_rules';
+
+		if ( ! get_site_option( $flushed_option ) ) {
+			flush_rewrite_rules();
+			update_site_option( $flushed_option, time() );
+		}
 	}
 
 	/**
@@ -83,7 +98,6 @@ class Onboarding {
 						$field['value']   = $this->get_recommended_plugins( true );
 					}
 					$steps[ $step_index ]['fields'][ $field_index ] = $field;
-
 				}
 			}
 		}
@@ -221,7 +235,25 @@ class Onboarding {
 		// object prefix not available yet, so we pass it.
 		// nonce is checked by the actual functions.
         // phpcs:ignore
-		return (bool) get_option( "{$prefix}_start_onboarding" ) || strpos( $_SERVER['REQUEST_URI'], $prefix . '/v1/onboarding/do_action/' ) !== false || strpos( $_SERVER['REQUEST_URI'], $prefix . '_onboarding_rest_api_fallback' ) !== false;
+        $skipped   = (bool) get_option( $prefix . '_skipped_onboarding' );
+		$started   = (bool) get_option( $prefix . '_start_onboarding' );
+		$completed = (bool) get_option( $prefix . '_completed_onboarding' );
+
+		$current_uri = sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ?? '' ) );
+
+		// Don't Reopen the wizard if the user skipped the wizard.
+		if ( $skipped || $completed ) {
+			delete_option( $prefix . '_skipped_onboarding' );
+			delete_option( $prefix . '_start_onboarding' );
+			delete_option( $prefix . '_completed_onboarding' );
+			delete_site_option( $prefix . '_onboarding_flushed_rewrite_rules' );
+			return false;
+		}
+
+		// If onboarding is started or in progress or being called via REST.
+		return $started
+			|| strpos( $current_uri, $prefix . '/v1/onboarding/do_action/' ) !== false
+			|| strpos( $current_uri, $prefix . '_onboarding_rest_api_fallback' ) !== false;
 	}
 
 	/**
@@ -283,7 +315,7 @@ class Onboarding {
 			exit;
 		}
 
-		$action = isset( $data['path'] ) ? sanitize_title( $data['path'] ) : sanitize_title( $_GET['rest_action'] );
+		$action = isset( $data['path'] ) ? sanitize_title( wp_unslash( $data['path'] ) ) : sanitize_title( wp_unslash( $_GET['rest_action'] ?? '' ) );
 		preg_match( '/do_action[\/|\-]([a-z\_\-]+)$/', $action, $matches );
 		if ( isset( $matches[1] ) ) {
 			$action = $matches[1];
@@ -344,6 +376,14 @@ class Onboarding {
 	private function handle_onboarding_action( string $action, array $data ): \WP_REST_Response {
 		$response = $this->response( false );
 		switch ( $action ) {
+			case 'user_skipped_wizard':
+				update_option( $this->prefix . '_skipped_onboarding', true, false );
+				$response = $this->response( true, [], 'User skipped the wizard' );
+				break;
+			case 'user_completed_wizard':
+				update_option( $this->prefix . '_completed_onboarding', true, false );
+				$response = $this->response( true, [], 'User Completed the wizard' );
+				break;
 			case 'activate_license':
 				// using prefixed hook.
                 // phpcs:ignore
@@ -395,13 +435,13 @@ class Onboarding {
 						}
 
 						if ( ! empty( $reporting_email_field_name ) ) {
-							// using prefixed hook.
+							// Using prefixed hook.
                             // phpcs:ignore
-							do_action( $this->prefix . '_onboarding_update_single_option', $reporting_email_field_name, $email );
+							do_action( $this->prefix . '_create_report_from_onboarding', $email );
 						}
 						if ( ! empty( $mailinglist_signup_field_name ) ) {
 							$include_tips = isset( $data['tips_tricks'] ) && (bool) $data['tips_tricks'];
-							// using prefixed hook.
+							// Using prefixed hook.
                             // phpcs:ignore
 							do_action( $this->prefix . '_onboarding_update_single_option', 'tips_tricks_mailinglist', $email );
 
@@ -424,15 +464,20 @@ class Onboarding {
 	 * Signup for Tips & Tricks
 	 */
 	private function signup_for_mailinglist( string $email ): void {
+
+		$api_params = [
+			'has_premium' => $this->is_pro,
+			'email'       => sanitize_email( $email ),
+		];
+
 		$current_user = wp_get_current_user();
 		$first_name   = $current_user->ID !== 0 ? sanitize_text_field( $current_user->first_name ) : '';
 		$last_name    = $current_user->ID !== 0 ? sanitize_text_field( $current_user->last_name ) : '';
-		$api_params   = [
-			'has_premium' => $this->is_pro,
-			'email'       => sanitize_email( $email ),
-			'first_name'  => $first_name,
-			'last_name'   => $last_name,
-		];
+		if ( strlen( $first_name ) > 1 ) {
+			$api_params['first_name'] = $first_name;
+			$api_params['last_name']  = $last_name;
+		}
+
 		wp_remote_post(
 			$this->mailing_list_endpoint,
 			[
@@ -516,9 +561,6 @@ class Onboarding {
 	 * Enqueue onboarding scripts and styles
 	 */
 	public function enqueue_onboarding_scripts(): void {
-		// script is loading, so we can remove the onboarding option.
-		delete_option( "{$this->prefix}_start_onboarding" );
-
 		$steps      = $this->get_steps();
 		$asset_file = include $this->onboarding_path . '/build/index.asset.php';
 
@@ -531,11 +573,10 @@ class Onboarding {
 			$asset_file['version'],
 			true
 		);
-		$rtl = is_rtl() ? '-rtl' : '';
 
 		wp_enqueue_style(
 			$this->prefix . '_onboarding',
-			$this->onboarding_url . "build/index$rtl.css",
+			$this->onboarding_url . 'build/index.css',
 			[],
 			$asset_file['version']
 		);

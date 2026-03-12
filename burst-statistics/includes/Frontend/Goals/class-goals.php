@@ -41,9 +41,8 @@ class Goals {
 		global $wpdb;
 
 		// Get all columns from {$wpdb->prefix}burst_goals table.
-		$table_name = $wpdb->prefix . 'burst_goals';
 		if ( empty( $this->orderby_columns ) ) {
-			$cols                  = $wpdb->get_results( "SHOW COLUMNS FROM $table_name", ARRAY_A );
+			$cols                  = $wpdb->get_results( "SHOW COLUMNS FROM {$wpdb->prefix}burst_goals", ARRAY_A );
 			$this->orderby_columns = array_column( $cols, 'Field' );
 		}
 
@@ -92,51 +91,72 @@ class Goals {
 	 * @return Goal[] Array of Goal objects.
 	 */
 	public function get_goals( array $args = [] ): array {
-		if ( ! $this->user_can_view() ) {
-			return [];
-		}
-
 		global $wpdb;
-		$table_name = $wpdb->prefix . 'burst_goals';
-
 		try {
 			$default_args = [
-				'status'  => 'all',
-				'limit'   => 9999,
-				'offset'  => 0,
-				'orderby' => 'ID',
-				'order'   => 'ASC',
+				'status'     => 'all',
+				'limit'      => 9999,
+				'offset'     => 0,
+				'orderby'    => 'ID',
+				'order'      => 'ASC',
+				'date_start' => -1,
+				'date_end'   => time(),
 			];
 
 			// merge args.
 			$args = wp_parse_args( $args, $default_args );
 
 			// sanitize args.
-			$args['order']   = $args['order'] === 'DESC' ? 'DESC' : 'ASC';
-			$args['orderby'] = $this->sanitize_orderby( $args['orderby'] );
-			$args['status']  = $this->sanitize_status( $args['status'] );
-			$args['limit']   = (int) $args['limit'];
-			$args['offset']  = (int) $args['offset'];
+			$args['order']      = $args['order'] === 'DESC' ? 'DESC' : 'ASC';
+			$args['orderby']    = $this->sanitize_orderby( $args['orderby'] );
+			$args['status']     = $this->sanitize_status( $args['status'] );
+			$args['limit']      = (int) $args['limit'];
+			$args['offset']     = (int) $args['offset'];
+			$args['date_start'] = (int) $args['date_start'];
+			$args['date_end']   = (int) $args['date_end'];
 
-			$query = "SELECT * FROM {$table_name}";
 			$where = [];
-			if ( $args['status'] !== 'all' ) {
-				$where[] = $wpdb->prepare( 'status = %s', $args['status'] );
-			}
-			if ( ! empty( $where ) ) {
-				$query .= ' WHERE ' . implode( ' AND ', $where );
+
+			if ( -1 !== $args['date_start'] ) {
+				$where[] = $wpdb->prepare(
+					'date_created >= %d',
+					$args['date_start']
+				);
 			}
 
-			// can only be columns or DESC/ASC because of sanitizing.
-			$query .= " ORDER BY {$args['orderby']} {$args['order']}";
-			// can only be integer because of sanitizing.
-			$query  .= " LIMIT {$args['offset']}, {$args['limit']}";
-			$results = $wpdb->get_results( $query, ARRAY_A );
+			if ( $args['date_end'] > 0 ) {
+				$where[] = $wpdb->prepare(
+					'date_created <= %d',
+					$args['date_end']
+				);
+			}
+
+			if ( 'all' !== $args['status'] ) {
+				$where[] = $wpdb->prepare(
+					'status = %s',
+					$args['status']
+				);
+			}
+
+			$where_sql = '';
+			if ( ! empty( $where ) ) {
+				$where_sql = 'WHERE ' . implode( ' AND ', $where );
+			}
+
+			$results = $wpdb->get_results(
+				$wpdb->prepare(
+					// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where_sql is constructed safely above.
+					"SELECT * FROM {$wpdb->prefix}burst_goals $where_sql ORDER BY %s %s LIMIT %d, %d",
+					esc_sql( $args['orderby'] ),
+					esc_sql( $args['order'] ),
+					$args['offset'],
+					$args['limit']
+				),
+				ARRAY_A
+			);
 
 		} catch ( \Exception $e ) {
 			self::error_log( $e->getMessage() );
-			// If an exception is caught, assume the table does not exist.
-			do_action( 'burst_install_tables' );
 			return [];
 		}
 

@@ -10,19 +10,6 @@ defined( 'ABSPATH' ) || die();
  */
 return [
 	[
-		'id'          => 'tracking-error',
-		'condition'   => [
-			'type'     => 'serverside',
-			'function' => 'Burst\Frontend\Endpoint::tracking_status_error()',
-
-		],
-		'msg'         => __( 'Due to your server or website configuration it is not possible to track statistics.', 'burst-statistics' ),
-		'url'         => 'instructions/troubleshoot-tracking/',
-		'plusone'     => true,
-		'icon'        => 'error',
-		'dismissible' => false,
-	],
-	[
 		'id'                  => 'bf_notice',
 		'condition'           => [
 			'type'     => 'serverside',
@@ -57,10 +44,20 @@ return [
 		// @phpstan-ignore-next-line
 		'msg'         => $this->sprintf(
 		// translators: 1: opening anchor tag to support thread, 2: closing anchor tag.
-			__( 'If you have any suggestions to improve our plugin, feel free to %sopen a support thread%s.', 'burst-statistics' ),
+			__( 'If you have any suggestions to improve our plugin, feel free to %1$sopen a support thread%2$s.', 'burst-statistics' ),
 			'<a href="https://wordpress.org/support/plugin/burst-statistics/" target="_blank">',
 			'</a>'
 		),
+		'icon'        => 'completed',
+		'dismissible' => true,
+	],
+	[
+		'id'          => 'join-discord',
+		'condition'   => [
+			'type' => 'activation',
+		],
+		'msg'         => __( 'Join the Burst community on Team Updraft Discord to discuss features, get help, and shape the future of Burst.', 'burst-statistics' ),
+		'url'         => 'https://discord.gg/jCC7GD59nS',
 		'icon'        => 'completed',
 		'dismissible' => true,
 	],
@@ -73,15 +70,12 @@ return [
 		'plusone'     => false,
 	],
 	[
+		// no condition on this task, as when this issue happens, cron is not working to add the task.
 		'id'          => 'cron',
-		'condition'   => [
-			'type'     => 'serverside',
-			'function' => '!(new \Burst\Admin\Cron\Cron() )->cron_active()',
-		],
-		'msg'         => __( 'Because your cron has not been triggered more than 24 hours, some functionality might not work as expected, like updating the page views counter in a post.', 'burst-statistics' ),
+		'msg'         => __( 'Your WordPress cron hasn’t been triggered for over 24 hours. As a result, Burst can’t update first visit and bounce data until it runs again.', 'burst-statistics' ),
 		'icon'        => 'warning',
 		'url'         => 'instructions/cron-error/',
-		'dismissible' => true,
+		'dismissible' => false,
 	],
 	[
 		'id'          => 'malicious_data_removal',
@@ -90,7 +84,7 @@ return [
 			'function' => 'wp_option_burst_cleanup_uid_visits',
 		],
 		// translators: %d is the number of visits detected from a single user in 24 hours.
-		'msg'         => sprintf( __( 'Burst has detected an anomalous number of visits (%d in 24 hours) from one user with UID %s. You can consider removing these hits by using the "fix" button, but if you\'re sure these are valid visits, you can dismiss this notice.', 'burst-statistics' ), (int) get_option( 'burst_cleanup_uid_visits', 0 ), esc_html( (string) get_option( 'burst_cleanup_uid', '' ) ) ),
+		'msg'         => sprintf( __( 'Burst has detected an anomalous number of visits (%1$d in 24 hours) from one user with UID %2$s. You can consider removing these hits by using the "fix" button, but if you\'re sure these are valid visits, you can dismiss this notice.', 'burst-statistics' ), (int) get_option( 'burst_cleanup_uid_visits', 0 ), esc_html( (string) get_option( 'burst_cleanup_uid', '' ) ) ),
 		'icon'        => 'warning',
 		'url'         => 'why-burst-removes-anomalous-visits-and-how-you-can-customize-it/',
 		'dismissible' => true,
@@ -111,7 +105,7 @@ return [
 			'function' => 'wp_option_burst_php_error_detected',
 		],
 		// translators: %d: error count, %s time of error.
-		'msg'         => sprintf( __( 'Burst has detected %d PHP errors, the last one on %s. Detected errors:', 'burst-statistics' ) . ' ' . substr( esc_html( get_option( 'burst_php_error_detected', '' ) ), 0, 500 ), (int) get_option( 'burst_php_error_count', 0 ), date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), get_option( 'burst_php_error_time' ) ) ),
+		'msg'         => sprintf( __( 'Burst has detected %1$d PHP errors, the last one on %2$s. Detected errors:', 'burst-statistics' ) . ' ' . substr( esc_html( get_option( 'burst_php_error_detected', '' ) ), 0, 500 ), (int) get_option( 'burst_php_error_count', 0 ), date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), get_option( 'burst_php_error_time' ) ) ),
 		'icon'        => 'warning',
 		'dismissible' => true,
 		'url'         => 'how-to-enable-debugging-in-wordpress',
@@ -163,5 +157,29 @@ return [
 		'plusone'             => false,
 		'url'                 => 'filtering-by-domain/',
 		'dismiss_permanently' => true,
+	],
+	[
+		'id'          => 'filters_in_url',
+		'msg'         => __( 'New: save or share your filtered view by simply copying the URL or bookmarking it.', 'burst-statistics' ),
+		'icon'        => 'new',
+		'dismissible' => true,
+		'plusone'     => false,
+	],
+	[
+		'id'          => 'opt-in-sharing',
+		'msg'         => __( 'Help us build better features, prioritize integrations, and improve recommendations by sharing anonymous usage data. We never collect personal information, your site URL, or IP addresses. Everything stays completely anonymous.', 'burst-statistics' ),
+		'icon'        => 'new',
+		'fix'         => 'burst_option_anonymous_usage_data',
+		'dismissible' => true,
+		'plusone'     => false,
+	],
+	[
+		'id'          => 'turbo_mode_recommended',
+		'msg'         => __( 'You have cookieless tracking enabled, but Turbo mode is not enabled on your site. For best performance results, we recommend to enable Turbo mode.', 'burst-statistics' ),
+		'icon'        => 'warning',
+		'dismissible' => true,
+		'plusone'     => false,
+		'url'         => 'definition/turbo-mode/',
+		'fix'         => 'burst_option_enable_turbo_mode',
 	],
 ];

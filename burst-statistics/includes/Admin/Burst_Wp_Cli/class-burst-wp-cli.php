@@ -230,15 +230,99 @@ class Burst_Wp_Cli {
 		if ( empty( $assoc_args ) ) {
 			\WP_CLI::error( 'No options passed' );
 		}
-
+		$last_updated_name = 'none';
 		foreach ( $assoc_args as $name => $value ) {
 			$value = $value === 'true' ? true : $value;
 			$this->update_option( $name, $value );
-			$admin = new Admin();
-			$admin->init();
-			$admin->create_js_file();
-			// response used in test.
-			\WP_CLI::success( "Option $name updated" );
+			$last_updated_name = $name;
+		}
+
+		$admin = new Admin();
+		$admin->init();
+		$admin->create_js_file();
+		// response used in test. using last updated option name.
+		\WP_CLI::success( "Option $last_updated_name updated" );
+	}
+
+	/**
+	 * Unzip a file through CLI
+	 *
+	 * @throws \WP_CLI\ExitException //exit exception.
+	 */
+	public function unzip( array $args, array $assoc_args ): void {
+		if ( ! $this->wp_cli_active() ) {
+			return;
+		}
+
+		if ( empty( $assoc_args['zip_path'] ) || empty( $assoc_args['extract_to'] ) ) {
+			\WP_CLI::error( 'zip_path and extract_to are required' );
+		}
+		global $wp_filesystem;
+		if ( ! function_exists( 'WP_Filesystem' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+
+		$zip_path   = $assoc_args['zip_path'];
+		$extract_to = $assoc_args['extract_to'];
+
+		$zip = new \ZipArchive();
+		if ( $zip->open( $zip_path ) === true ) {
+			if ( ! file_exists( $extract_to ) ) {
+				WP_Filesystem();
+				if ( ! $wp_filesystem->is_dir( $extract_to ) ) {
+					$wp_filesystem->mkdir( $extract_to, FS_CHMOD_DIR );
+				}
+			}
+			$zip->extractTo( $extract_to );
+			$zip->close();
+			\WP_CLI::success( "Extracted $zip_path to $extract_to" );
+		} else {
+			\WP_CLI::error( "Failed to open zip file: $zip_path" );
+		}
+	}
+
+	/**
+	 * Send test telemetry data
+	 *
+	 * Usage: wp burst send_test_telemetry [--endpoint=<url>]
+	 *
+	 * @throws \WP_CLI\ExitException //exit exception.
+	 */
+	public function send_test_telemetry( array $args, array $assoc_args ): void {
+		if ( ! $this->wp_cli_active() ) {
+			return;
+		}
+
+		// Only allow this command in test environments or when explicitly enabled.
+		if ( ! self::is_test() && ! defined( 'BURST_ALLOW_TEST_TELEMETRY' ) ) {
+			\WP_CLI::error( 'Test telemetry can only be sent in test environments or when BURST_ALLOW_TEST_TELEMETRY is defined in wp-config.php' );
+		}
+
+		// Check if Data_Sharing class exists.
+		if ( ! class_exists( 'Burst\Admin\Data_Sharing\Data_Sharing' ) ) {
+			\WP_CLI::error( 'Data_Sharing class not found' );
+		}
+
+		$data_sharing = new \Burst\Admin\Data_Sharing\Data_Sharing();
+
+		// Get custom endpoint if provided.
+		$endpoint = $assoc_args['endpoint'] ?? null;
+
+		if ( $endpoint ) {
+			\WP_CLI::log( "Sending test telemetry to custom endpoint: $endpoint" );
+		} else {
+			\WP_CLI::log( 'Sending test telemetry to default endpoint' );
+		}
+
+		$response = $data_sharing->send_test_telemetry( $endpoint );
+
+		// Output the response as JSON.
+		echo wp_json_encode( $response, JSON_PRETTY_PRINT );
+
+		if ( $response['success'] ) {
+			\WP_CLI::success( 'Test telemetry sent successfully' );
+		} else {
+			\WP_CLI::error( 'Failed to send test telemetry: ' . ( $response['message'] ?? 'Unknown error' ) );
 		}
 	}
 }

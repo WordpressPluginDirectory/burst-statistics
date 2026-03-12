@@ -25,10 +25,12 @@ use Burst\Admin\AutoInstaller\Auto_Installer;
 	public Frontend_Admin $frontend_admin;
 	public Integrations $integrations;
 
-	public ?bool $user_can_manage   = null;
-	public ?bool $user_can_view     = null;
-	public ?bool $has_admin_access  = null;
-	public ?bool $is_logged_in_rest = null;
+	public ?bool $user_can_manage          = null;
+	public ?bool $user_can_view            = null;
+	public ?bool $user_can_view_sales      = null;
+	public ?bool $has_admin_access         = null;
+	public ?bool $is_logged_in_rest        = null;
+	public ?bool $is_shareable_link_viewer = null;
 	public string $admin_url;
 	/**
 	 * Constructor
@@ -59,13 +61,16 @@ use Burst\Admin\AutoInstaller\Auto_Installer;
 		define( 'BURST_PATH', defined( 'BURST_PRO_FILE' ) ? dirname( BURST_PRO_FILE ) . '/' : dirname( BURST_FREE_FILE ) . '/' );
 
 		$plugin_url = plugin_dir_url( BURST_FILE );
-		$scheme     = ( strpos( site_url(), 'https://' ) === 0 ) ? 'https' : 'http';
-		$plugin_url = set_url_scheme( $plugin_url, $scheme );
+		// Use stored scheme as fallback for cron contexts where is_ssl() and home_url() are unreliable.
+		$stored_scheme = get_option( 'burst_site_scheme', 'http' );
+		$scheme        = ( is_ssl() || str_starts_with( home_url(), 'https://' ) || $stored_scheme === 'https' ) ? 'https' : 'http';
+		$plugin_url    = set_url_scheme( $plugin_url, $scheme );
 		define( 'BURST_URL', $plugin_url );
 		define( 'BURST_DASHBOARD_URL', admin_url( 'admin.php?page=burst' ) );
 		define( 'BURST_PLUGIN', plugin_basename( BURST_FILE ) );
 		define( 'BURST_PLUGIN_NAME', defined( 'BURST_PRO' ) ? 'Burst Pro' : 'Burst Statistics' );
-		define( 'BURST_VERSION', '3.1.0.3' );
+		define( 'BURST_VERSION', '3.2.3' );
+		define( 'BURST_PUBLIC_KEY', 'bst_7k9mQpX2vL4nWzR8jYhF6tGcU5eBxN3dS1aM0iKoHgJfVq' );
 		// deprecated constant.
         //phpcs:ignore
         define( 'burst_version', BURST_VERSION );

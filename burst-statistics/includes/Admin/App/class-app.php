@@ -2,8 +2,10 @@
 namespace Burst\Admin\App;
 
 use Burst\Admin\App\Fields\Fields;
+use Burst\Admin\App\Fields\Reporting_Fields;
 use Burst\Admin\App\Menu\Menu;
 use Burst\Admin\Burst_Onboarding\Burst_Onboarding;
+use Burst\Admin\Reports\Reports;
 use Burst\Admin\Statistics\Goal_Statistics;
 use Burst\Admin\Tasks;
 use Burst\Frontend\Endpoint;
@@ -15,6 +17,7 @@ use Burst\Traits\Helper;
 use Burst\Traits\Sanitize;
 use Burst\Traits\Save;
 use Burst\UserAgentParser\UserAgentParser;
+
 use function Burst\burst_loader;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -33,7 +36,12 @@ class App {
 	public Menu $menu;
 	public Fields $fields;
 	public Tasks $tasks;
-	public string $nonce_expired_feedback = 'The provided nonce has expired. Please refresh the page.';
+
+	/**
+	 * Reporting fields.
+	 */
+	public Reporting_Fields $reporting_fields;
+	public string $nonce_expired_feedback = 'Session expired. Try refreshing the page.';
 
 	/**
 	 * Initialize the App class
@@ -49,9 +57,12 @@ class App {
 		add_action( 'burst_weekly_clear_referrers_cron', [ $this, 'weekly_clear_referrers_table' ] );
 		add_action( 'burst_weekly_clear_spam_browsers_cron', [ $this, 'weekly_clear_spam_browsers' ] );
 		add_action( 'burst_daily', [ $this, 'maybe_update_plugin_path' ] );
-		$this->menu   = new Menu();
-		$this->fields = new Fields();
-		$onboarding   = new Burst_Onboarding();
+		$this->menu             = new Menu();
+		$this->fields           = new Fields();
+		$this->reporting_fields = new Reporting_Fields();
+		$this->reporting_fields->init();
+
+		$onboarding = new Burst_Onboarding();
 		$onboarding->init();
 
 		add_action( 'admin_init', [ $this, 'maybe_redirect_to_settings_page' ] );
@@ -77,7 +88,7 @@ class App {
 		if ( get_transient( 'burst_redirect_to_settings_page' ) && ( ! isset( $_GET['page'] ) || $_GET['page'] !== 'burst' ) ) {
 			delete_transient( 'burst_redirect_to_settings_page' );
 			// we don't redirect when installed through the onboarding of another plugin.
-			if ( get_option( 'teamupdraft_installation_source_burst-statistics' ) ) {
+			if ( get_site_option( 'teamupdraft_installation_source_burst-statistics' ) ) {
 				return;
 			}
 
@@ -202,22 +213,13 @@ class App {
 		);
 
 		// Get menu configuration and create submenu items dynamically.
-		$menu_config = $this->get_menu_config();
+		$menu_config = $this->menu->get();
 		$this->create_submenu_items( $menu_config );
 
 		// Add "Upgrade to Pro" menu item if not Pro version.
 		$this->add_upgrade_menu_item();
 
 		add_action( "admin_print_scripts-{$page_hook_suffix}", [ $this, 'plugin_admin_scripts' ], 1 );
-	}
-
-	/**
-	 * Get menu configuration from config file
-	 *
-	 * @return array<int, array<string, mixed>> Menu configuration array
-	 */
-	private function get_menu_config(): array {
-		return $this->menu->get();
 	}
 
 	/**
@@ -454,7 +456,7 @@ class App {
 
 		// Normalize/merge params from GET and POST data.
 		$merged = $get_params;
-		foreach ( [ 'goal_id', 'type', 'date_start', 'date_end', 'args', 'search', 'filters', 'metrics', 'group_by' ] as $k ) {
+		foreach ( [ 'goal_id', 'type', 'date_start', 'date_end', 'args', 'search', 'filters', 'metrics', 'group_by', 'isOnboarding' ] as $k ) {
 			if ( array_key_exists( $k, $data ) ) {
 				$merged[ $k ] = $data[ $k ];
 			}
@@ -504,6 +506,9 @@ class App {
 				$response = $this->get_posts( $request, $data );
 			} elseif ( strpos( $action, '/data/' ) !== false ) {
 				$response = $this->get_data( $request );
+			} elseif ( strpos( $action, '/reports' ) ) {
+				$reports  = new Reports();
+				$response = $reports->get_reports( $request );
 			} elseif ( $do_action ) {
 				$req = new \WP_REST_Request();
 				$req->set_param( 'action', $do_action );
@@ -1005,10 +1010,13 @@ class App {
 				$option_id = sanitize_text_field( $task['fix'] );
 				$task_id   = sanitize_text_field( $task['id'] );
 				// should start with burst_ .
-				if ( strpos( $option_id, 'burst_' ) === 0 ) {
+				if ( str_starts_with( $option_id, 'burst_option_' ) ) {
+					$burst_option_id = str_replace( 'burst_option_', '', $option_id );
+					$this->update_option( $burst_option_id, true );
+				} elseif ( str_starts_with( $option_id, 'burst_' ) ) {
 					update_option( $option_id, true );
+					wp_schedule_single_event( time(), 'burst_scheduled_task_fix_' . $task_id );
 				}
-				wp_schedule_single_event( time(), 'burst_scheduled_task_fix' );
 
 				\Burst\burst_loader()->admin->tasks->dismiss_task( $task_id );
 				break;
@@ -1033,6 +1041,7 @@ class App {
 				$data      = $this->get_filter_options( $data_type, $search );
 				break;
 			default:
+				$data = is_array( $data ) ? $data : [];
 				$data = apply_filters( 'burst_do_action', [], $action, $data );
 		}
 
@@ -1040,13 +1049,7 @@ class App {
 			ob_clean();
 		}
 
-		return new \WP_REST_Response(
-			[
-				'data'            => $data,
-				'request_success' => true,
-			],
-			200
-		);
+		return $this->create_rest_response( $data );
 	}
 
 	/**
@@ -1062,7 +1065,7 @@ class App {
 		}
 
 		global $wpdb;
-		$valid_types = [ 'hosts', 'devices', 'browsers', 'platforms', 'countries', 'states', 'cities', 'pages', 'referrers', 'campaigns', 'sources', 'mediums', 'contents', 'terms' ];
+		$valid_types = [ 'hosts', 'devices', 'browsers', 'platforms', 'countries', 'states', 'continents', 'cities', 'pages', 'referrers', 'campaigns', 'sources', 'mediums', 'contents', 'terms' ];
 
 		// Return invalid data type error.
 		if ( empty( $data_type ) || ! in_array( $data_type, $valid_types, true ) ) {
@@ -1110,6 +1113,18 @@ class App {
 				array_keys( $raw_data ),
 				$raw_data
 			);
+		} elseif ( $data_type === 'continents' ) {
+			$raw_data = apply_filters( 'burst_continents', [] );
+			$raw_data = array_map(
+				function ( $key, $value ) {
+					return [
+						'ID'   => $key,
+						'name' => $value,
+					];
+				},
+				array_keys( $raw_data ),
+				array_values( $raw_data )
+			);
 		} elseif ( $data_type === 'referrers' ) {
 			$raw_data = $this->get_referrer_options( $search );
 			$raw_data = array_map(
@@ -1126,6 +1141,7 @@ class App {
 
 			if ( false === $raw_data ) {
 				// Cache miss - get from database.
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- $queries are predefined and safe.
 				$raw_data = $wpdb->get_results( $queries[ $data_type ], ARRAY_A );
 
 				// Store in cache.
@@ -1292,28 +1308,30 @@ class App {
 	private function get_referrer_options( string $search = '' ): array {
 		global $wpdb;
 
-		$search    = sanitize_text_field( $search );
-		$like      = '%' . $wpdb->esc_like( $search ) . '%';
-		$where     = strlen( $search ) > 0 ? $wpdb->prepare( 'WHERE name LIKE %s ', $like ) : '';
-		$referrers = $wpdb->get_results( "SELECT name FROM {$wpdb->prefix}burst_referrers $where ORDER BY ID ASC limit 1000", ARRAY_A );
+		$search = sanitize_text_field( $search );
+		$like   = '%' . $wpdb->esc_like( $search ) . '%';
+		$where  = strlen( $search ) > 0 ? $wpdb->prepare( 'WHERE name LIKE %s ', $like ) : '';
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where is prepared above.
+		$referrers = $wpdb->get_results( "SELECT TRIM(TRAILING '/' FROM name) as name FROM {$wpdb->prefix}burst_referrers $where ORDER BY ID ASC limit 1000", ARRAY_A );
 		if ( empty( $referrers ) ) {
-			$sql = "INSERT IGNORE INTO {$wpdb->prefix}burst_referrers (name)
-                    SELECT domain
-                    FROM (
-                      SELECT 
-                        LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '/', -1)) AS domain
-                      FROM {$wpdb->prefix}burst_statistics
-                      WHERE referrer IS NOT NULL 
-                        AND referrer != ''
-                        AND referrer LIKE 'http%'
-                        AND referrer NOT LIKE '/%'
-                    ) AS derived
-                    WHERE domain != ''
-                      AND SUBSTRING_INDEX(domain, ':', 1) NOT REGEXP '^[0-9]{1,3}(\\.[0-9]{1,3}){3}$'
-                    GROUP BY domain
-                    ORDER BY COUNT(*) DESC
-                    LIMIT 2000;";
-			$wpdb->query( $sql );
+			$wpdb->query(
+				"INSERT IGNORE INTO {$wpdb->prefix}burst_referrers (name)
+                 SELECT TRIM(TRAILING '/' FROM domain) AS domain
+                 FROM (
+                   SELECT 
+                     LOWER(SUBSTRING_INDEX(referrer, '/', 1)) AS domain
+                   FROM {$wpdb->prefix}burst_sessions
+                   WHERE referrer IS NOT NULL 
+                     AND referrer != ''
+                     AND referrer NOT LIKE '/%'
+                 ) AS derived
+                 WHERE domain != ''
+                   AND SUBSTRING_INDEX(domain, ':', 1) NOT REGEXP '^[0-9]{1,3}(\\.[0-9]{1,3}){3}$'
+                 GROUP BY domain
+                 ORDER BY COUNT(*) DESC
+                 LIMIT 2000;"
+			);
+
 			$referrers = $wpdb->get_results( "select name from {$wpdb->prefix}burst_referrers ORDER BY ID ASC", ARRAY_A );
 		}
 		return $referrers;
@@ -1394,18 +1412,87 @@ class App {
 	}
 
 	/**
+	 * Process and sanitize request arguments for data requests.
+	 *
+	 * @param \WP_REST_Request $request The REST request object.
+	 * @param string           $type The data type being requested.
+	 * @param array            $base_args Base arguments to include in the result.
+	 * @return array<string, mixed> Sanitized arguments from the request.
+	 */
+	public function normalize_values( \WP_REST_Request $request, string $type, array $base_args = [] ): array {
+		$available_args = $this->get_data_available_args( $type );
+
+		foreach ( $available_args as $arg ) {
+			if ( $request->get_param( $arg ) ) {
+				$base_args[ $arg ] = $this->normalize_value( $arg, $request->get_param( $arg ) );
+			}
+		}
+		return $base_args;
+	}
+
+	/**
+	 * Sanitize argument based on its type.
+	 *
+	 * @param string $arg The argument name.
+	 * @param mixed  $value The value to sanitize.
+	 * @return mixed Sanitized value.
+	 */
+	// phpcs:disable
+	public function normalize_value( string $arg, $value ) {
+		// phpcs:enable
+
+		switch ( $arg ) {
+			case 'filters':
+				return array_filter(
+					$this->ensure_array_if_applicable( $value ),
+					static function ( $item ) {
+						// Keep values that are not false and not empty string, OR are exactly zero (int or string).
+						if ( $item === 0 || $item === '0' ) {
+							return true;
+						}
+						return $item !== false && $item !== '';
+					}
+				);
+			case 'group_by':
+			case 'order_by':
+			case 'metrics':
+				$processed_value = $this->ensure_array_if_applicable( $value );
+				if ( is_array( $processed_value ) ) {
+					return $processed_value;
+				} else {
+					return [ $processed_value ];
+				}
+			case 'goal_id':
+				return absint( $value );
+			case 'date_start':
+				return $this->normalize_date( $value . ' 00:00:00' );
+			case 'date_end':
+				return $this->normalize_date( $value . ' 23:59:59' );
+			default:
+				// Allow other plugins/extensions to handle custom argument sanitization.
+				// Apply smart transformation for consistent filter interface.
+				$processed_value = $this->ensure_array_if_applicable( $value );
+				$sanitized_value = apply_filters( 'burst_sanitize_arg', null, $arg, $processed_value );
+				if ( $sanitized_value !== null ) {
+					return $sanitized_value;
+				}
+				return $value;
+		}
+	}
+
+	/**
 	 * Get data from the REST API.
 	 */
 	public function get_data( \WP_REST_Request $request ): \WP_REST_Response {
 		// Process common request patterns.
-		$processed = $this->process_rest_request( $request, 'view' );
+		$processed = $this->process_rest_request( $request );
+
 		if ( $processed['success'] === false ) {
 			return $this->create_rest_response( $processed, 403 );
 		}
 
 		$type = $processed['type'];
-		$args = $this->sanitize_request_args( $request, $type );
-		$args = apply_filters( 'burst_get_data_request_args', $args, $type, $request );
+		$args = apply_filters( 'burst_get_data_request_args', $this->normalize_values( $request, $type ), $type, $request );
 
 		switch ( $type ) {
 			case 'live-visitors':
@@ -1470,13 +1557,25 @@ class App {
 		}
 
 		if ( ( isset( $data['success'] ) && ! $data['success'] ) || $status !== 200 ) {
-			return new \WP_REST_Response(
-				[
-					'data'    => $data,
-					'success' => false,
-				],
-				$status
-			);
+			unset( $data['success'] );
+
+			if ( isset( $data['message'] ) ) {
+				return new \WP_REST_Response(
+					[
+						'message' => $data['message'],
+						'success' => false,
+					],
+					$status
+				);
+			} else {
+				return new \WP_REST_Response(
+					[
+						'data'    => $data,
+						'success' => false,
+					],
+					$status
+				);
+			}
 		}
 
 		return new \WP_REST_Response(
@@ -2144,8 +2243,9 @@ class App {
 
 		global $wpdb;
 
-		$sql = $wpdb->prepare(
-			"SELECT p.ID as page_id, 
+		$results = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT p.ID as page_id, 
             p.post_title, 
             COALESCE(s.pageviews, 0) as pageviews
              FROM {$wpdb->prefix}posts p
@@ -2159,10 +2259,10 @@ class App {
                AND p.post_status = 'publish'
              ORDER BY p.post_title ASC
              LIMIT %d",
-			$max_post_count
+				$max_post_count
+			),
+			ARRAY_A
 		);
-
-		$results = $wpdb->get_results( $sql, ARRAY_A );
 
 		$result_array = [];
 		foreach ( $results as $result ) {

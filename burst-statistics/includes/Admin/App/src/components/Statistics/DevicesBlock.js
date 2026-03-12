@@ -1,130 +1,134 @@
 import { __ } from '@wordpress/i18n';
 import ClickToFilter from '../Common/ClickToFilter';
-import { useFiltersStore } from '@/store/useFiltersStore';
-import { useDate } from '@/store/useDateStore';
 import ExplanationAndStatsItem from '@/components/Common/ExplanationAndStatsItem';
 import { useQuery } from '@tanstack/react-query';
 import {
-  getDevicesTitleAndValueData,
-  getDevicesSubtitleData
+	getDevicesTitleAndValueData,
+	getDevicesSubtitleData
 } from '@/api/getDevicesData';
 import { Block } from '@/components/Blocks/Block';
 import { BlockHeading } from '@/components/Blocks/BlockHeading';
 import { BlockContent } from '@/components/Blocks/BlockContent';
 import { useMemo, memo } from 'react';
+import {useBlockConfig} from '@/hooks/useBlockConfig';
 
-// Memoize the device item to prevent unnecessary re-renders
+// Memoize the device item to prevent unnecessary re-renders.
 const DeviceItem = memo( ({ deviceKey, deviceData }) => {
-  return (
-    <ClickToFilter
-      key={deviceKey}
-      filter="device"
-      filterValue={deviceKey}
-      label={deviceData.title}
-    >
-      <ExplanationAndStatsItem
-        iconKey={deviceKey}
-        title={deviceData.title}
-        subtitle={deviceData.subtitle}
-        value={deviceData.value}
-        change={deviceData.change}
-        changeStatus={deviceData.changeStatus}
-      />
-    </ClickToFilter>
-  );
+	return (
+		<ClickToFilter
+			key={deviceKey}
+			filter="device_id"
+			filterValue={deviceData?.device_id}
+			label={deviceData.title}
+		>
+			<ExplanationAndStatsItem
+				iconKey={deviceKey}
+				title={deviceData.title}
+				subtitle={deviceData.subtitle}
+				value={deviceData.value}
+				change={deviceData.change}
+				changeStatus={deviceData.changeStatus}
+			/>
+		</ClickToFilter>
+	);
 });
 
-const DevicesBlock = () => {
-  const { startDate, endDate, range } = useDate( ( state ) => state );
-  const filters = useFiltersStore( ( state ) => state.filters );
+DeviceItem.displayName = 'DeviceItem';
 
-  // Memoize args to prevent unnecessary recomputations
-  const args = useMemo( () => ({ filters }), [ filters ]);
+const DevicesBlock = ( props ) => {
+	const { startDate, endDate, range, filters, isReport, index } = useBlockConfig( props );
 
-  // Memoize device names
-  const deviceNames = useMemo( () => ({
-    desktop: __( 'Desktop', 'burst-statistics' ),
-    tablet: __( 'Tablet', 'burst-statistics' ),
-    mobile: __( 'Mobile', 'burst-statistics' ),
-    other: __( 'Other', 'burst-statistics' )
-  }), []);
+	// Memoize args to prevent unnecessary recomputations
+	const args = useMemo( () => ({ filters }), [ filters ]);
 
-  // Memoize empty data structures
-  const { emptyDataTitleValue, emptyDataSubtitle, placeholderData } = useMemo( () => {
-    let emptyDataTitleValue = {};
-    let emptyDataSubtitle = {};
-    let placeholderData = {};
+	// Memoize device names
+	const deviceNames = useMemo(
+		() => ({
+			desktop: __( 'Desktop', 'burst-statistics' ),
+			tablet: __( 'Tablet', 'burst-statistics' ),
+			mobile: __( 'Mobile', 'burst-statistics' ),
+			other: __( 'Other', 'burst-statistics' )
+		}),
+		[]
+	);
 
-    // loop through metrics and set default values
-    Object.keys( deviceNames ).forEach( function( key ) {
-      emptyDataTitleValue[key] = {
-        title: deviceNames[key],
-        value: '-%'
-      };
-      emptyDataSubtitle[key] = {
-        subtitle: '-'
-      };
-      placeholderData[key] = {
-        title: deviceNames[key],
-        value: '-%',
-        subtitle: '-'
-      };
-    });
+	// Memoize empty data structures
+	const { emptyDataTitleValue, emptyDataSubtitle, placeholderData } =
+		useMemo( () => {
+			const emptyDataTitleValue = {};
+			const emptyDataSubtitle = {};
+			const placeholderData = {};
 
-    return { emptyDataTitleValue, emptyDataSubtitle, placeholderData };
-  }, [ deviceNames ]);
+			// loop through metrics and set default values
+			Object.keys( deviceNames ).forEach( function( key ) {
+				emptyDataTitleValue[key] = {
+					title: deviceNames[key],
+					value: '-%'
+				};
+				emptyDataSubtitle[key] = {
+					subtitle: '-'
+				};
+				placeholderData[key] = {
+					title: deviceNames[key],
+					value: '-%',
+					subtitle: '-'
+				};
+			});
 
-  const titleAndValueQuery = useQuery({
-    queryKey: [ 'devicesTitleAndValue', startDate, endDate, args ],
-    queryFn: () =>
-      getDevicesTitleAndValueData({ startDate, endDate, range, args }),
-    placeholderData: emptyDataTitleValue
-  });
+			return { emptyDataTitleValue, emptyDataSubtitle, placeholderData };
+		}, [ deviceNames ]);
 
-  const subtitleQuery = useQuery({
-    queryKey: [ 'devicesSubtitle', startDate, endDate, args ],
-    queryFn: () => getDevicesSubtitleData({ startDate, endDate, range, args }),
-    placeholderData: emptyDataSubtitle
-  });
+	const titleAndValueQuery = useQuery({
+		queryKey: [ 'devicesTitleAndValue', startDate, endDate, args ],
+		queryFn: () =>
+			getDevicesTitleAndValueData({ startDate, endDate, range, args }),
+		placeholderData: emptyDataTitleValue
+	});
 
-  // Memoize the merged data to prevent unnecessary recomputations
-  const data = useMemo( () => {
-    if ( titleAndValueQuery.data && subtitleQuery.data ) {
-      const mergedData = { ...titleAndValueQuery.data }; // Clone data to avoid mutation
-      Object.keys( mergedData ).forEach( ( key ) => {
-        if ( subtitleQuery.data[key]) {
+	const subtitleQuery = useQuery({
+		queryKey: [ 'devicesSubtitle', startDate, endDate, args ],
+		queryFn: () =>
+			getDevicesSubtitleData({ startDate, endDate, range, args }),
+		placeholderData: emptyDataSubtitle
+	});
 
-          // Check if it exists in subtitle data
-          mergedData[key] = { ...mergedData[key], ...subtitleQuery.data[key] };
-        }
-      });
-      return mergedData;
-    }
-    return placeholderData;
-  }, [ titleAndValueQuery.data, subtitleQuery.data, placeholderData ]);
 
-  const loading = titleAndValueQuery.isLoading || titleAndValueQuery.isFetching;
-  const loadingClass = loading ? 'burst-loading' : '';
+	// Memoize the merged data to prevent unnecessary recomputations
+	const data = useMemo( () => {
+		if ( titleAndValueQuery.data && subtitleQuery.data ) {
+			const mergedData = { ...titleAndValueQuery.data }; // Clone data to avoid mutation
+			Object.keys( mergedData ).forEach( ( key ) => {
+				if ( subtitleQuery.data[key]) {
 
-  // Memoize the device keys to prevent recreation of the array on every render
-  const deviceKeys = useMemo( () => Object.keys( data ), [ data ]);
+					// Check if it exists in subtitle data
+					mergedData[key] = {
+						...mergedData[key],
+						...subtitleQuery.data[key]
+					};
+				}
+			});
+			return mergedData;
+		}
+		return placeholderData;
+	}, [ titleAndValueQuery.data, subtitleQuery.data, placeholderData ]);
 
-  return (
-    <Block className="row-span-1 lg:col-span-6 xl:col-span-3">
-      <BlockHeading
-        title={__( 'Devices', 'burst-statistics' )}
-      />
-      <BlockContent>
-        {deviceKeys.map( key => (
-          <DeviceItem
-            key={key}
-            deviceKey={key}
-            deviceData={data[key]}
-          />
-        ) )}
-      </BlockContent>
-    </Block>
-  );
+
+	// Memoize the device keys to prevent recreation of the array on every render
+	const deviceKeys = useMemo( () => Object.keys( data ), [ data ]);
+	return (
+		<Block className="row-span-1 lg:col-span-6 xl:col-span-3">
+			<BlockHeading title={__( 'Devices', 'burst-statistics' )} isReport={isReport} reportBlockIndex={index} />
+			<BlockContent>
+				{deviceKeys.map( ( key ) => (
+					<DeviceItem
+						key={key}
+						deviceKey={key}
+						deviceData={data[key]}
+					/>
+				) )}
+			</BlockContent>
+		</Block>
+	);
 };
 
 // Export a memoized version of the component

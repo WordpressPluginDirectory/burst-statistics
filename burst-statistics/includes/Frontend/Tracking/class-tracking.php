@@ -52,15 +52,20 @@ class Tracking {
 	 */
 	public function track_hit( array $data ): string {
 		// validate & sanitize all data.
-		$sanitized_data        = $this->prepare_tracking_data( $data );
-		$should_load_ecommerce = $sanitized_data['should_load_ecommerce'];
+		$sanitized_data = $this->prepare_tracking_data( $data );
 
-		unset( $sanitized_data['should_load_ecommerce'] );
+		if ( $this->blocked_by_custom_block_rules( $sanitized_data ) ) {
+			self::error_log( 'Custom block rule prevented tracking.' );
+			return 'blocked by custom rule';
+		}
 
 		if ( $sanitized_data['referrer'] === 'spammer' ) {
 			self::error_log( 'Referrer spam prevented.' );
 			return 'referrer is spam';
 		}
+
+		$should_load_ecommerce = $sanitized_data['should_load_ecommerce'];
+		unset( $sanitized_data['should_load_ecommerce'] );
 
 		// If new hit, get the last row.
 		$result = $this->get_hit_type( $sanitized_data );
@@ -80,8 +85,9 @@ class Tracking {
 		$session_arr    = [
 			'last_visited_url' => $this->create_path( $sanitized_data ),
 			'city_code'        => $sanitized_data['city_code'] ?? '',
+			'referrer'         => $sanitized_data['referrer'],
 		];
-		unset( $sanitized_data['city_code'] );
+		unset( $sanitized_data['city_code'], $sanitized_data['referrer'] );
 
 		// keep track of the hosts, to check if this is a multi domain setup.
 		$destructured = $this->sanitize_url( $sanitized_data['host'] );
@@ -134,7 +140,7 @@ class Tracking {
 
 		// if track_url_changes is enabled, also check for changing parameters.
 		if ( $this->get_option_bool( 'track_url_change' ) ) {
-            $previous_page_url .= $previous_hit['parameters'] ?? '';
+			$previous_page_url .= $previous_hit['parameters'] ?? '';
 			$new_page_url      .= $sanitized_data['parameters'];
 		}
 		$is_same_url = $previous_page_url === $new_page_url;
@@ -177,6 +183,68 @@ class Tracking {
 	}
 
 	/**
+	 * Apply custom block rules to the sanitized data. Rules can be simple strings or regex patterns. Examples of regex patterns:
+	 * /text-in-url[0-9]+/i
+	 * /^https:\/\/domain\./
+	 * /facebook(bot|crawler)/i
+	 *
+	 * @param array $sanitized_data The sanitized tracking data.
+	 * @return bool If the request should be blocked.
+	 */
+	private function blocked_by_custom_block_rules( array $sanitized_data ): bool {
+		$block_rules = (string) $this->get_option( 'custom_block_rules' );
+		if ( empty( $block_rules ) ) {
+			return false;
+		}
+
+		$page_url   = $sanitized_data['host'] . $this->create_path( $sanitized_data );
+		$user_agent = isset( $_SERVER['HTTP_USER_AGENT'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ) : '';
+		$referrer   = $sanitized_data['referrer'];
+
+		// Explode by new line, trim each line and filter out empty lines.
+		$block_rules_array = array_filter(
+			array_map( 'trim', explode( "\n", $block_rules ) ),
+			fn( $rule ) => $rule !== ''
+		);
+		foreach ( $block_rules_array as $rule ) {
+			// Check if rule looks like regex (starts and ends with / and has valid delimiters).
+			$is_regex = preg_match( '/^\/.*\/[imsxu]*$/', $rule );
+
+			if ( $is_regex ) {
+				$fields_to_check = [
+					$page_url,
+					$referrer,
+					$user_agent,
+				];
+
+				foreach ( $fields_to_check as $field ) {
+                    // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Intentionally suppressing errors for user-provided regex patterns.
+					$match_result = @preg_match( $rule, $field );
+
+					// Check for regex errors (returns false on invalid pattern).
+					if ( $match_result === false ) {
+						self::error_log( sprintf( 'Invalid regex pattern in custom block rules: %s', $rule ) );
+						// Skip to next rule.
+						break;
+					}
+
+					// Check for match.
+					if ( $match_result === 1 ) {
+						return true;
+					}
+				}
+			} elseif ( stripos( $page_url, $rule ) !== false ||
+				stripos( $referrer, $rule ) !== false ||
+				stripos( $user_agent, $rule ) !== false
+			) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * Burst Statistics beacon endpoint for collecting hits
 	 */
 	public function beacon_track_hit(): string {
@@ -211,9 +279,17 @@ class Tracking {
 	 * Burst Statistics rest_api endpoint for collecting hits
 	 */
 	public function rest_track_hit( \WP_REST_Request $request ): \WP_REST_Response {
-		// has to be decoded, contrary to what phpstan says.
-		// @phpstan-ignore-next-line.
-		$data     = json_decode( $request->get_json_params(), true );
+		$raw_data = $request->get_json_params();
+
+		// API expects JSON string, not pre-parsed array.
+		if ( ! is_string( $raw_data ) ) {
+			return new \WP_REST_Response(
+				[ 'error' => 'Invalid request format' ],
+				400
+			);
+		}
+
+		$data     = json_decode( $raw_data, true );
 		$test_hit = isset( $data['url'] ) && strpos( $data['url'], 'burst_test_hit' ) !== false;
 
 		if ( Ip::is_ip_blocked() && ! $test_hit ) {
@@ -460,10 +536,8 @@ class Tracking {
 			if ( false === $all_items ) {
 				// Cache miss - load all items from database.
 				global $wpdb;
-				$results = $wpdb->get_results(
-					"SELECT ID, name FROM {$wpdb->prefix}burst_{$item}s",
-					OBJECT_K
-				);
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name cannot be parameterized. Selected from safe list above.
+				$results = $wpdb->get_results( "SELECT ID, name FROM {$wpdb->prefix}burst_{$item}s", OBJECT_K );
 
 				$all_items = [];
 				foreach ( $results as $result ) {
@@ -594,8 +668,11 @@ class Tracking {
 			return [];
 		}
 
-		// Prevent queries during install.
-		if ( defined( 'BURST_INSTALL_TABLES_RUNNING' ) ) {
+		// Prevent queries during install or uninstall.
+		if (
+			defined( 'BURST_INSTALL_TABLES_RUNNING' ) ||
+			defined( 'BURST_UNINSTALLING' )
+		) {
 			return [];
 		}
 
@@ -725,21 +802,6 @@ class Tracking {
 	}
 
 	/**
-	 * Get first time visit
-	 */
-	public function is_first_time_visit( string $burst_uid ): int {
-		global $wpdb;
-		// Check if uid is already in the database.
-		$sql                = $wpdb->prepare(
-			"SELECT EXISTS(SELECT 1 FROM {$wpdb->prefix}burst_statistics WHERE uid = %s LIMIT 1)",
-			$burst_uid,
-		);
-		$fingerprint_exists = $wpdb->get_var( $sql );
-
-		return $fingerprint_exists ? 0 : 1;
-	}
-
-	/**
 	 * Get last user statistic from the burst_statistics table.
 	 *
 	 * @param string $uid         The user identifier or fingerprint.
@@ -772,6 +834,7 @@ class Tracking {
 		if ( $need_session_data ) {
 			// With JOIN to get host.
 			$last_row = $wpdb->get_row(
+                // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where consists of only prepared parts.
 				$wpdb->prepare(
 					"SELECT 
                     s.ID, 
@@ -788,23 +851,12 @@ class Tracking {
                 LIMIT 1",
 					$uid
 				)
+                // phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			);
 		} else {
 			$last_row = $wpdb->get_row(
-				$wpdb->prepare(
-					"SELECT 
-                    ID, 
-                    session_id, 
-                    parameters, 
-                    time_on_page, 
-                    bounce, 
-                    page_url
-                FROM {$wpdb->prefix}burst_statistics
-                WHERE uid = %s {$where} 
-                ORDER BY ID DESC 
-                LIMIT 1",
-					$uid
-				)
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where consists of only prepared parts.
+				$wpdb->prepare( "SELECT ID, session_id, parameters, time_on_page, bounce, page_url FROM {$wpdb->prefix}burst_statistics WHERE uid = %s {$where} ORDER BY ID DESC LIMIT 1", $uid )
 			);
 		}
 
@@ -870,11 +922,11 @@ class Tracking {
 		}
 
 		$inserted = $wpdb->insert( $wpdb->prefix . 'burst_statistics', $data );
-        if ( $inserted === false ) {
-            self::error_log( 'Failed to create statistic. Error: ' . $wpdb->last_error );
-            return 0;
-        }
-        return $wpdb->insert_id;
+		if ( $inserted === false ) {
+			self::error_log( 'Failed to create statistic. Error: ' . $wpdb->last_error );
+			return 0;
+		}
+		return $wpdb->insert_id;
 	}
 
 	/**
@@ -913,12 +965,8 @@ class Tracking {
 		foreach ( $goal_ids as $goal_id ) {
 			$values[] = $wpdb->prepare( '(%d, %d)', $goal_id, $statistic_id );
 		}
-
-		$wpdb->query(
-			"INSERT IGNORE INTO {$wpdb->prefix}burst_goal_statistics 
-        (goal_id, statistic_id) 
-        VALUES " . implode( ',', $values )
-		);
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Using prepare for each value above.
+		$wpdb->query( "INSERT IGNORE INTO {$wpdb->prefix}burst_goal_statistics (goal_id, statistic_id)  VALUES " . implode( ',', $values ) );
 	}
 
 	/**
@@ -982,8 +1030,7 @@ class Tracking {
 			return '';
 		}
 
-		$fingerprint = $_SESSION['burst_fingerprint'] ?? '';
-		return $this->sanitize_fingerprint( $fingerprint );
+		return $this->sanitize_fingerprint( sanitize_text_field( $_SESSION['burst_fingerprint'] ?? '' ) );
 	}
 
 	/**

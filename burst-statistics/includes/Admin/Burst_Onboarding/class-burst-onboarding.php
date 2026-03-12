@@ -54,7 +54,7 @@ class Burst_Onboarding {
 	 */
 	public function setup_onboarding(): void {
 		// only run this if the page is burst, or a Burst rest request.
-		if ( ! $this->is_burst_page() && ! $this->is_logged_in_rest() ) {
+		if ( ! $this->is_burst_page() ) {
 			return;
 		}
 
@@ -256,8 +256,10 @@ class Burst_Onboarding {
 		}
 
 		if ( $field['id'] === 'user_role_blocklist' ) {
-			if ( is_array( $field['value'] ) && in_array( 'administrator', $field['value'], true ) ) {
-				$field['default'] = true;
+			if ( empty( $field['value'] ) ||
+				( is_array( $field['value'] ) && in_array( 'administrator', $field['value'], true ) )
+			) {
+				$field['value'] = true;
 			}
 		}
 
