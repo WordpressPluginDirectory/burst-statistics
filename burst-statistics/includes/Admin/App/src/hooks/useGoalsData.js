@@ -6,10 +6,11 @@ import {
 	deleteGoal,
 	addPredefinedGoal
 } from '@/utils/api';
-import { toast } from 'react-toastify';
+import { toast } from '@/utils/toast';
 import { __ } from '@wordpress/i18n';
 import { produce } from 'immer';
 import useLicenseData from '@/hooks/useLicenseData';
+import useShareableLinkStore from '@/store/useShareableLinkStore';
 
 /**
  * Custom hook for managing goals data using TanStack Query.
@@ -18,11 +19,14 @@ import useLicenseData from '@/hooks/useLicenseData';
  *
  * @return {Object} - An object containing goals data and CRUD operations
  */
+// fallow-ignore-next-line complexity
 const useGoalsData = () => {
 	const queryClient = useQueryClient();
 	const { isPro } = useLicenseData();
+	const { isShareableLinkViewer, userCanFilter } = useShareableLinkStore();
 
-	// Main query to fetch goals, predefined goals, and goal fields
+	// Shared viewers without filter permission should not fetch goals.
+	const shouldFetchGoals = ! isShareableLinkViewer || userCanFilter;
 	const goalsQuery = useQuery({
 		queryKey: [ 'goals_data' ],
 		queryFn: async() => {
@@ -30,9 +34,12 @@ const useGoalsData = () => {
 			return {
 				goals: response.goals || [],
 				predefinedGoals: response.predefinedGoals || [],
-				goalFields: Object.values( response.goalFields || {})
+				goalFields: Object.values( response.goalFields || {}),
+				activeGoalsCount: response.active_goals_count || 0,
+				goalLimit: response.goal_limit ?? window.burst_settings?.goal_limit ?? 3
 			};
 		},
+		enabled: shouldFetchGoals,
 		retry: 1
 	});
 
@@ -66,8 +73,7 @@ const useGoalsData = () => {
 		return goal || null;
 	};
 
-	// Update a goal value in the cache
-	const setGoalValue = ( id, type, value ) => {
+	const updateGoalInCache = ( id, updater ) => {
 		queryClient.setQueryData([ 'goals_data' ], ( oldData ) => {
 			if ( ! oldData ) {
 				return oldData;
@@ -76,38 +82,34 @@ const useGoalsData = () => {
 			return produce( oldData, ( draft ) => {
 				const index = draft.goals.findIndex( ( goal ) => goal.id === id );
 				if ( -1 !== index ) {
-					draft.goals[index][type] = value;
+					updater( draft.goals[index]);
 				}
 			});
+		});
+	};
+
+	// Update a goal field value in the local cache only (for settings fields, persisted via saveGoalSettings)
+	const setGoalValue = ( id, type, value ) => {
+		updateGoalInCache( id, ( goal ) => {
+			goal[type] = value;
 		});
 	};
 
 	// Update an entire goal in the cache
 	const updateGoal = ( id, data ) => {
-		queryClient.setQueryData([ 'goals_data' ], ( oldData ) => {
-			if ( ! oldData ) {
-				return oldData;
-			}
-
-			return produce( oldData, ( draft ) => {
-				const index = draft.goals.findIndex( ( goal ) => goal.id === id );
-				if ( -1 !== index ) {
-					draft.goals[index] = { ...draft.goals[index], ...data };
-				}
-			});
+		updateGoalInCache( id, ( goal ) => {
+			Object.assign( goal, data );
 		});
 	};
 
-	// Mutation to save all goals
+	// Mutation to save all goals (triggered by the global Settings Save button)
 	const saveGoalsMutation = useMutation({
 		mutationFn: async() => {
 			const goals = queryClient.getQueryData([ 'goals_data' ])?.goals || [];
 			return await setGoals({ goals });
 		},
 		onSuccess: () => {
-
-			// Optionally refresh data after saving
-			// queryClient.invalidateQueries(['goals_data']);
+			queryClient.invalidateQueries([ 'goals_data' ]);
 		},
 		onError: ( error ) => {
 			console.error( error );
@@ -127,6 +129,36 @@ const useGoalsData = () => {
 		}
 	});
 
+	// Mutation to toggle a goal's active status — immediately persists to server (same as add/delete)
+	const toggleGoalStatusMutation = useMutation({
+		mutationFn: async({ id, status }) => {
+			return await setGoals({ goals: [ { id, status } ] });
+		},
+		onSuccess: ( _response, { id, status }) => {
+
+			// Update cache optimistically and then invalidate to sync active_goals_count
+			queryClient.setQueryData([ 'goals_data' ], ( oldData ) => {
+				if ( ! oldData ) {
+					return oldData;
+				}
+				return produce( oldData, ( draft ) => {
+					const index = draft.goals.findIndex( ( goal ) => goal.id === id );
+					if ( -1 !== index ) {
+						draft.goals[index].status = status;
+					}
+				});
+			});
+			queryClient.invalidateQueries([ 'goals_data' ]);
+		},
+		onError: ( error ) => {
+			console.error( error );
+			toast.error( __( 'Failed to update goal status', 'burst-statistics' ) );
+
+			// Revert the optimistic UI update by re-fetching
+			queryClient.invalidateQueries([ 'goals_data' ]);
+		}
+	});
+
 	// Mutation to add a new goal
 	const addGoalMutation = useMutation({
 		mutationFn: async() => {
@@ -142,6 +174,8 @@ const useGoalsData = () => {
 					draft.goals.push( response.goal );
 				});
 			});
+
+			queryClient.invalidateQueries([ 'goals_data' ]);
 
 			toast.success( __( 'Goal added successfully!', 'burst-statistics' ) );
 		},
@@ -181,6 +215,8 @@ const useGoalsData = () => {
 					});
 				});
 
+				queryClient.invalidateQueries([ 'goals_data' ]);
+
 				toast.success(
 					__( 'Goal deleted successfully!', 'burst-statistics' )
 				);
@@ -217,6 +253,8 @@ const useGoalsData = () => {
 				});
 			});
 
+			queryClient.invalidateQueries([ 'goals_data' ]);
+
 			toast.success(
 				__( 'Successfully added predefined goal!', 'burst-statistics' )
 			);
@@ -230,9 +268,15 @@ const useGoalsData = () => {
 		}
 	});
 
+	// activeGoalsCount comes directly from the server response — single source of truth
+	const activeGoalsCount = goalsQuery.data?.activeGoalsCount || 0;
+	const goalLimit = goalsQuery.data?.goalLimit ?? window.burst_settings?.goal_limit ?? 3;
+
 	return {
 
 		// Data
+		activeGoalsCount,
+		goalLimit,
 		goals: goalsQuery.data?.goals || [],
 		goalFields: goalsQuery.data?.goalFields || [],
 		predefinedGoals: goalsQuery.data?.predefinedGoals || [],
@@ -249,6 +293,8 @@ const useGoalsData = () => {
 		saveGoals: saveGoalsMutation.mutateAsync,
 		saveGoalTitle: ( id, value ) =>
 			saveGoalTitleMutation.mutateAsync({ id, value }),
+		toggleGoalStatus: ( id, status ) =>
+			toggleGoalStatusMutation.mutateAsync({ id, status }),
 		addGoal: addGoalMutation.mutateAsync,
 		deleteGoal: deleteGoalMutation.mutateAsync,
 		addPredefinedGoal: ( predefinedGoalId ) =>

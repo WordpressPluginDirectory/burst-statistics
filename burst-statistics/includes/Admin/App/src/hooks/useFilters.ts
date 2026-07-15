@@ -16,7 +16,7 @@ import {
 } from '@/config/filterConfig';
 import { useWizardStore } from '@/store/reports/useWizardStore';
 
-export const FILTER_ENABLED_ROUTES = [ '/statistics', '/sources', '/sales' ];
+const FILTER_ENABLED_ROUTES = [ '/statistics', '/engagement', '/sources', '/sales', '/table' ];
 
 export const isFilterEnabledRoute = ( pathname: string ): boolean => {
 	return FILTER_ENABLED_ROUTES.some( ( route ) => pathname.startsWith( route ) );
@@ -32,6 +32,13 @@ const buildSearchParams = (
 			result[key] = params[key] as string;
 		}
 	});
+
+	// Preserve the share token if it exists in the current URL so
+	// filter changes don't break shared viewer authentication.
+	const currentToken = new URLSearchParams( window.location.search ).get( 'burst_share_token' );
+	if ( currentToken ) {
+		result.burst_share_token = currentToken;
+	}
 
 	result[TRAILING_PARAM_KEY] = '';
 	return result;
@@ -49,6 +56,7 @@ const hasUrlFilters = ( searchParams: FilterSearchParams ): boolean => {
  * - Without reportBlockIndex: uses URL params (for /statistics, /sources, /sales)
  * - With reportBlockIndex: uses wizard store (for report blocks)
  */
+// fallow-ignore-next-line complexity
 export const useFilters = ( reportBlockIndex?: number ) => {
 	const updateReportFilters = useWizardStore( ( state ) => state.updateFilters );
 	const getReportFilters = useWizardStore( ( state ) => state.getFilters );
@@ -97,6 +105,7 @@ export const useFilters = ( reportBlockIndex?: number ) => {
 	}, [ searchParams, isFilterRoute, isBlockMode, reportBlockIndex, getReportFilters, wizardContent ]);
 
 	// Initialize URL filters (only in URL mode)
+	// fallow-ignore-next-line complexity
 	useEffect( () => {
 		if ( isBlockMode || ! isFilterRoute || hasInitialized.current ) {
 			return;
@@ -138,6 +147,8 @@ export const useFilters = ( reportBlockIndex?: number ) => {
 	 * Set a filter value
 	 */
 	const setFilters = useCallback(
+
+		// fallow-ignore-next-line complexity
 		( filter: string, value: string ) => {
 			if ( ! filter.length ) {
 				return;
@@ -238,8 +249,13 @@ export const useFilters = ( reportBlockIndex?: number ) => {
 		clearSavedFilters();
 		if ( isFilterRoute ) {
 			navigate({
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				search: ( () => ({}) ) as any,
+				search: ( () => {
+
+					// Preserve the share token when clearing filters.
+					const token = new URLSearchParams( window.location.search ).get( 'burst_share_token' );
+					return token ? { burst_share_token: token } : {};
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				}) as any,
 				replace: false
 			});
 		}
@@ -335,14 +351,7 @@ export const useFilters = ( reportBlockIndex?: number ) => {
 export default useFilters;
 
 export {
-	FILTER_CONFIG,
-	FILTER_CATEGORIES,
 	FILTER_KEYS,
-	INITIAL_FILTERS,
 	TRAILING_PARAM_KEY,
-	validateFilterSearch,
-	type FilterKey,
-	type FilterSearchParams,
-	type FilterCategory,
-	type FilterConfig
+	type FilterSearchParams
 } from '@/config/filterConfig';

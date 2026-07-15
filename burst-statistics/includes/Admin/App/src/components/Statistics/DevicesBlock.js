@@ -28,6 +28,7 @@ const DeviceItem = memo( ({ deviceKey, deviceData }) => {
 				value={deviceData.value}
 				change={deviceData.change}
 				changeStatus={deviceData.changeStatus}
+				metricKey={deviceKey}
 			/>
 		</ClickToFilter>
 	);
@@ -113,11 +114,13 @@ const DevicesBlock = ( props ) => {
 	}, [ titleAndValueQuery.data, subtitleQuery.data, placeholderData ]);
 
 
+	const isLoading = titleAndValueQuery.isFetching || subtitleQuery.isFetching;
+
 	// Memoize the device keys to prevent recreation of the array on every render
 	const deviceKeys = useMemo( () => Object.keys( data ), [ data ]);
 	return (
-		<Block className="row-span-1 lg:col-span-6 xl:col-span-3">
-			<BlockHeading title={__( 'Devices', 'burst-statistics' )} isReport={isReport} reportBlockIndex={index} />
+		<Block className="row-span-1 @lg:col-span-6 @xl:col-span-3">
+			<BlockHeading title={__( 'Devices', 'burst-statistics' )} isReport={isReport} reportBlockIndex={index} isLoading={isLoading} />
 			<BlockContent>
 				{deviceKeys.map( ( key ) => (
 					<DeviceItem

@@ -12,19 +12,50 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 use Burst\Frontend\Endpoint;
-use Burst\Frontend\Goals\Goal;
 use Burst\Frontend\Ip\Ip;
+use Burst\Frontend\Search\Search;
+use Burst\Traits\Database_Helper;
 use Burst\Traits\Helper;
 use Burst\Traits\Sanitize;
 use Burst\UserAgentParser\UserAgentParser;
 
 class Tracking {
+	use Database_Helper;
 	use Helper;
 	use Sanitize;
 
 	public string $beacon_enabled;
 	public array $lookup_table_cache = [];
 	public array $goals              = [];
+
+	/**
+	 * Register the GeoIP enrichment on construction.
+	 *
+	 * Done in the constructor (not init) so it also applies on the SHORTINIT beacon
+	 * endpoint, which instantiates `new Tracking()` directly but never calls init().
+	 */
+	public function __construct() {
+		if ( ! has_filter( 'burst_before_track_hit', [ self::class, 'add_geoip_location_data' ] ) ) {
+			add_filter( 'burst_before_track_hit', [ self::class, 'add_geoip_location_data' ], 10, 3 );
+		}
+	}
+
+	/**
+	 * Enrich the tracked hit with location data.
+	 *
+	 * The reader class is resolved lazily (at hit time): free uses the core Country
+	 * reader, Pro swaps in its City reader via the burst_geoip_handler filter.
+	 *
+	 * @param array<string, mixed>      $arr          The tracking data.
+	 * @param string                    $hit_type     The type of hit.
+	 * @param array<string, mixed>|null $previous_hit Previous hit data, if any.
+	 * @return array<string, mixed>
+	 */
+	public static function add_geoip_location_data( array $arr, string $hit_type, ?array $previous_hit ): array {
+		$handler = apply_filters( 'burst_geoip_handler', Tracking_GeoIp::class );
+		return $handler::add_location_data( $arr, $hit_type, $previous_hit );
+	}
+
 	/**
 	 * Constructor
 	 */
@@ -51,7 +82,12 @@ class Tracking {
 	 * Burst Statistics endpoint for collecting hits
 	 */
 	public function track_hit( array $data ): string {
-		// validate & sanitize all data.
+		$is_test_hit = $this->is_test_hit( $data['url'] ?? '' );
+		if ( Ip::is_ip_blocked() && ! $is_test_hit ) {
+			return 'ip blocked';
+		}
+
+		// Validate & sanitize all data.
 		$sanitized_data = $this->prepare_tracking_data( $data );
 
 		if ( $this->blocked_by_custom_block_rules( $sanitized_data ) ) {
@@ -67,34 +103,56 @@ class Tracking {
 		$should_load_ecommerce = $sanitized_data['should_load_ecommerce'];
 		unset( $sanitized_data['should_load_ecommerce'] );
 
+		// Preserve the external link URL before it is unset below; it is passed to
+		// the burst_track_external_link action, which Pro handles.
+		$external_link_url = $sanitized_data['external_link_url'] ?? '';
+
 		// If new hit, get the last row.
 		$result = $this->get_hit_type( $sanitized_data );
 		if ( empty( $result ) ) {
 			return 'failed to determine hit type';
 		}
 
-		// create or update.
-		$hit_type = $result['hit_type'];
-		// last row. create can also have a last row from the previous hit.
-		$previous_hit          = $result['last_row'];
-		$filtered_previous_hit = $previous_hit;
-		if ( $previous_hit === null ) {
-			$filtered_previous_hit = [];
-		}
-		$sanitized_data = apply_filters( 'burst_before_track_hit', $sanitized_data, $hit_type, $filtered_previous_hit );
-		$session_arr    = [
-			'last_visited_url' => $this->create_path( $sanitized_data ),
-			'city_code'        => $sanitized_data['city_code'] ?? '',
-			'referrer'         => $sanitized_data['referrer'],
-		];
-		unset( $sanitized_data['city_code'], $sanitized_data['referrer'] );
+		$hit_type     = $result['hit_type'];
+		$previous_hit = $result['last_row'];
 
-		// keep track of the hosts, to check if this is a multi domain setup.
-		$destructured = $this->sanitize_url( $sanitized_data['host'] );
-		$host         = $destructured['host'] ?? '';
-		// Normalize host by removing www. prefix for comparison.
+		$filtered_previous_hit = $previous_hit ?? [];
+		$sanitized_data        = apply_filters( 'burst_before_track_hit', $sanitized_data, $hit_type, $filtered_previous_hit );
+
+		// Centralize all session-level fields in $session.
+		$session = [
+			'last_visited_url'   => $this->create_path( $sanitized_data ),
+			'city_code'          => $sanitized_data['city_code'] ?? '',
+			'referrer'           => $sanitized_data['referrer'],
+			'bounce'             => $sanitized_data['bounce'] ?? 1,
+			'browser_id'         => $sanitized_data['browser_id'] ?? 0,
+			'browser_version_id' => $sanitized_data['browser_version_id'] ?? 0,
+			'platform_id'        => $sanitized_data['platform_id'] ?? 0,
+			'device_id'          => $sanitized_data['device_id'] ?? 0,
+		];
+
+		$search_term = $sanitized_data['search_term'] ?? '';
+
+		// $statistic contains only fields that belong on burst_statistics.
+		unset(
+			$sanitized_data['city_code'],
+			$sanitized_data['referrer'],
+			$sanitized_data['bounce'],
+			$sanitized_data['external_link_url'],
+			$sanitized_data['browser_id'],
+			$sanitized_data['browser_version_id'],
+			$sanitized_data['platform_id'],
+			$sanitized_data['device_id'],
+			$sanitized_data['search_term']
+		);
+		$statistic = $sanitized_data;
+
+		// Keep track of the hosts, to check if this is a multi domain setup.
+		$destructured    = $this->sanitize_url( $statistic['host'] );
+		$host            = $destructured['host'] ?? '';
 		$normalized_host = preg_replace( '/^www\./i', '', $host );
 		$is_multi_domain = get_option( 'burst_is_multi_domain' );
+
 		if ( ! $is_multi_domain ) {
 			$first_domain = get_option( 'burst_first_domain' );
 			// only update this once, on the first used domain.
@@ -108,68 +166,68 @@ class Tracking {
 		}
 
 		if ( $this->get_option_bool( 'filtering_by_domain' ) ) {
-			$session_arr['host'] = $host;
+			$session['host'] = $host;
 		}
 
-		// update burst_sessions table.
-		// Get the last record with the same uid within 30 minutes. If it exists, use session_id. If not, create a new session.
+		// Handle session: reuse existing or create new.
 		if ( isset( $previous_hit ) && $previous_hit['session_id'] > 0 ) {
-			$sanitized_data['session_id'] = $previous_hit['session_id'];
-			if ( $this->session_needs_update( $previous_hit, $session_arr ) ) {
-				$this->update_session( (int) $sanitized_data['session_id'], $session_arr );
+			$statistic['session_id'] = $previous_hit['session_id'];
+			if ( $this->session_needs_update( $previous_hit, $session ) ) {
+				$this->update_session( (int) $statistic['session_id'], $session );
 			}
 		} elseif ( $previous_hit === null ) {
-			$session_arr['first_visited_url'] = $this->create_path( $sanitized_data );
-			$sanitized_data['session_id']     = $this->create_session( $session_arr );
+			// New session — include first_visited_url and all session-level fields.
+			$session['first_visited_url'] = $this->create_path( $statistic );
+			$statistic['session_id']      = $this->create_session( $session );
 		}
 
-		// if there is a fingerprint use that instead of uid.
-		if ( $sanitized_data['fingerprint'] && ! $sanitized_data['uid'] ) {
-			$this->store_fingerprint_in_session( $sanitized_data['fingerprint'], $should_load_ecommerce );
-			$sanitized_data['uid'] = $sanitized_data['fingerprint'];
+		// If there is a fingerprint, use that instead of uid.
+		if ( $statistic['fingerprint'] && ! $statistic['uid'] ) {
+			$this->store_fingerprint_in_session( $statistic['fingerprint'], $should_load_ecommerce );
+			$statistic['uid'] = $statistic['fingerprint'];
 		}
+		unset( $statistic['fingerprint'] );
 
-		unset( $sanitized_data['fingerprint'] );
-
-		// update burst_statistics table.
-		// Get the last record with the same uid and page_url. If it exists update it. If not, create a new record and add time() to $sanitized_data['time'].
-		// if update hit, make sure that the URL matches.
+		// Determine if URL changed (for update hit).
 		$previous_page_url = $previous_hit['page_url'] ?? '';
+		$new_page_url      = $statistic['page_url'];
 
-		$new_page_url = $sanitized_data['page_url'];
-
-		// if track_url_changes is enabled, also check for changing parameters.
 		if ( $this->get_option_bool( 'track_url_change' ) ) {
 			$previous_page_url .= $previous_hit['parameters'] ?? '';
-			$new_page_url      .= $sanitized_data['parameters'];
+			$new_page_url      .= $statistic['parameters'];
 		}
 		$is_same_url = $previous_page_url === $new_page_url;
 
 		if ( $hit_type === 'update' && ( $is_same_url || $previous_hit['session_id'] === '' ) ) {
-			// add up time_on_page to the existing record.
-			$sanitized_data['time_on_page'] += $previous_hit['time_on_page'];
-			$sanitized_data['ID']            = $previous_hit['ID'];
-			$this->update_statistic( $sanitized_data );
+			// Accumulate time_on_page on the existing statistic row.
+			$statistic['time_on_page'] += $previous_hit['time_on_page'];
+			$statistic['ID']            = $previous_hit['ID'];
+			$this->update_statistic( $statistic );
 		} elseif ( $hit_type === 'create' ) {
-			do_action( 'burst_before_create_statistic', $sanitized_data );
-			// if it is not an update hit, create a new record.
-			$sanitized_data['time']             = time();
-			$sanitized_data['first_time_visit'] = 0;
-			$insert_id                          = $this->create_statistic( $sanitized_data );
-			do_action( 'burst_after_create_statistic', $insert_id, $sanitized_data );
+			do_action( 'burst_before_create_statistic', $statistic );
+			$statistic['time'] = time();
+			$insert_id         = $this->create_statistic( $statistic );
+			if ( ! empty( $search_term ) ) {
+				$frontend_search = new Search();
+				$frontend_search->init();
+				$statistic['search_term'] = $search_term;
+			}
+			do_action( 'burst_after_create_statistic', $insert_id, $statistic );
 		}
 
-		if ( array_key_exists( 'ID', $sanitized_data ) && $sanitized_data['ID'] > 0 ) {
-			$statistic_id = $sanitized_data['ID'];
-		} else {
-			$statistic_id = $insert_id ?? 0;
-		}
+		$statistic_id = $statistic['ID'] ?? ( $insert_id ?? 0 );
+
 		if ( $statistic_id > 0 ) {
-			$completed_goals = $this->get_completed_goals( $sanitized_data['completed_goals'], $sanitized_data['page_url'] );
-			// if $sanitized_data['completed_goals'] is not an empty array, update burst_goals table.
+			$completed_goals = $this->get_completed_goals( $statistic['completed_goals'], $statistic['page_url'], (int) ( $statistic['page_id'] ?? 0 ) );
 			if ( ! empty( $completed_goals ) ) {
 				$this->create_goal_statistic( $statistic_id, $completed_goals );
 			}
+
+			// External link tracking is a Pro-only feature. Pro hooks
+			// burst_track_external_link from Pro/Frontend/Tracking/tracking.php
+			// (where the track_external_links option and empty-URL checks live), so
+			// the free build carries no reference to the Pro class.
+			do_action( 'burst_track_external_link', (int) $statistic_id, $external_link_url );
 		}
 
 		return 'success';
@@ -252,15 +310,10 @@ class Tracking {
 		if ( empty( $request ) ) {
 			wp_die( 'not a valid request' );
 		}
+
 		if ( $request === 'request=test' ) {
 			http_response_code( 200 );
 			return 'success';
-		}
-
-		if ( IP::is_ip_blocked() && strpos( $request, 'burst_test_hit' ) === false ) {
-			http_response_code( 200 );
-
-			return 'ip blocked';
 		}
 
 		$data = json_decode( $request, true );
@@ -289,15 +342,7 @@ class Tracking {
 			);
 		}
 
-		$data     = json_decode( $raw_data, true );
-		$test_hit = isset( $data['url'] ) && strpos( $data['url'], 'burst_test_hit' ) !== false;
-
-		if ( Ip::is_ip_blocked() && ! $test_hit ) {
-			// @phpstan-ignore-next-line.
-			$status_code = WP_DEBUG ? 202 : 200;
-			return new \WP_REST_Response( 'Burst Statistics: Your IP is blocked from tracking.', $status_code );
-		}
-
+		$data = json_decode( $raw_data, true );
 		if ( isset( $data['request'] ) && $data['request'] === 'test' ) {
 			return new \WP_REST_Response( [ 'success' => 'test' ], 200 );
 		}
@@ -312,6 +357,36 @@ class Tracking {
 	}
 
 	/**
+	 * Verify if this is a test hit, using nonce verification to prevent bypassing the ip block.
+	 */
+	private function is_test_hit( string $url ): bool {
+		if ( empty( $url ) ) {
+			return false;
+		}
+
+		$test_hit = str_contains( $url, 'burst_test_hit' );
+		if ( ! $test_hit ) {
+			return false;
+		}
+		// extract nonce from url.
+		$nonce = null;
+
+		// wp_parse_url() isn't available in shortinit.
+        // phpcs:ignore
+		$parsed = parse_url( $url );
+
+		if ( isset( $parsed['query'] ) ) {
+			parse_str( $parsed['query'], $query_params );
+			$nonce = $query_params['nonce'] ?? null;
+		}
+		$stored_token = get_transient( 'burst_onboarding_token' );
+		if ( empty( $stored_token ) || empty( $nonce ) ) {
+			return false;
+		}
+		return hash_equals( $stored_token, $nonce );
+	}
+
+	/**
 	 * Prepare and sanitize raw tracking data from the client for storage.
 	 *
 	 * @param array<string, mixed> $data Raw tracking data input.
@@ -323,6 +398,7 @@ class Tracking {
 	 *     uid: string,
 	 *     fingerprint: string,
 	 *     referrer: string,
+	 *     external_link_url: string,
 	 *     time_on_page: int,
 	 *     bounce: int,
 	 *     browser_id?: int,
@@ -351,6 +427,7 @@ class Tracking {
 			'uid'                   => null,
 			'fingerprint'           => null,
 			'referrer_url'          => null,
+			'external_link_url'     => null,
 			'user_agent'            => null,
 			'time_on_page'          => null,
 			'completed_goals'       => null,
@@ -359,6 +436,12 @@ class Tracking {
 			'should_load_ecommerce' => false,
 		];
 		$data     = wp_parse_args( $data, $defaults );
+
+		$privacy_level = $this->get_option( 'privacy_level', 'cookie' );
+		if ( $privacy_level === 'private_mode' ) {
+			$data['fingerprint'] = null;
+			$data['uid']         = $this->get_private_uid();
+		}
 
 		// update array.
 		$sanitized_data                    = [];
@@ -374,6 +457,7 @@ class Tracking {
 		$sanitized_data['uid']                   = $this->sanitize_uid( $data['uid'] );
 		$sanitized_data['fingerprint']           = $this->sanitize_fingerprint( $data['fingerprint'] );
 		$sanitized_data['referrer']              = $this->sanitize_referrer( $data['referrer_url'] );
+		$sanitized_data['external_link_url']     = $this->sanitize_external_link_url( $data['external_link_url'] );
 		$sanitized_data['browser_id']            = self::get_lookup_table_id( 'browser', $user_agent_data['browser'] );
 		$sanitized_data['browser_version_id']    = self::get_lookup_table_id( 'browser_version', $user_agent_data['browser_version'] );
 		$sanitized_data['platform_id']           = self::get_lookup_table_id( 'platform', $user_agent_data['platform'] );
@@ -383,7 +467,38 @@ class Tracking {
 		$sanitized_data['page_id']               = (int) $data['page_id'];
 		$sanitized_data['page_type']             = $this->sanitize_page_identifier( $data['page_type'] );
 		$sanitized_data['should_load_ecommerce'] = filter_var( $data['should_load_ecommerce'], FILTER_VALIDATE_BOOLEAN );
+		$sanitized_data['search_term']           = isset( $data['search_term'] ) ? sanitize_text_field( wp_unslash( (string) $data['search_term'] ) ) : '';
 		return $sanitized_data;
+	}
+
+	/**
+	 * Generate a private mode UID.
+	 */
+	private function get_private_uid(): string {
+		$ip   = Ip::get_ip_address();
+		$ua   = isset( $_SERVER['HTTP_USER_AGENT'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ) : '';
+		$salt = $this->get_rotating_salt();
+		return hash( 'sha256', $ip . $ua . $salt );
+	}
+
+	/**
+	 * Get the rotating salt for private mode tracking.
+	 */
+	private function get_rotating_salt(): string {
+		$option_name = 'burst_rotating_salt';
+		$stored      = get_option( $option_name, [] );
+		$today       = gmdate( 'Y-m-d' );
+
+		if ( ! is_array( $stored ) || empty( $stored['salt'] ) || empty( $stored['date'] ) || $stored['date'] !== $today ) {
+			$salt   = wp_generate_password( 64, true, true );
+			$stored = [
+				'date' => $today,
+				'salt' => $salt,
+			];
+			update_option( $option_name, $stored, false );
+		}
+
+		return $stored['salt'];
 	}
 
 	/**
@@ -422,6 +537,31 @@ class Tracking {
 		}
 
 		return sanitize_title( $page_identifier );
+	}
+
+	/**
+	 * Sanitize tracked external link URL.
+	 */
+	private function sanitize_external_link_url( ?string $external_link_url ): string {
+		if ( empty( $external_link_url ) ) {
+			return '';
+		}
+
+		$url = esc_url_raw( $external_link_url, [ 'http', 'https' ] );
+		if ( empty( $url ) ) {
+			return '';
+		}
+
+		$parsed = wp_parse_url( $url );
+		if ( empty( $parsed['scheme'] ) || empty( $parsed['host'] ) ) {
+			return '';
+		}
+
+		if ( ! in_array( $parsed['scheme'], [ 'http', 'https' ], true ) ) {
+			return '';
+		}
+
+		return $url;
 	}
 
 	/**
@@ -586,6 +726,7 @@ class Tracking {
 	 *         do_not_track: int,
 	 *         enable_turbo_mode: int,
 	 *         track_url_change: int,
+	 *         track_external_links: int,
 	 *         cookie_retention_days: int
 	 *     },
 	 *     goals: array{
@@ -614,14 +755,17 @@ class Tracking {
 					'ajaxUrl'             => admin_url( 'admin-ajax.php' ),
 				],
 				'options'  => [
-					'cookieless'            => $this->get_option_int( 'enable_cookieless_tracking' ),
+					'privacy_level'         => $this->get_option( 'privacy_level', 'cookie' ),
+					'cookieless'            => ( $this->get_option( 'privacy_level', 'cookie' ) !== 'cookie' ) ? 1 : 0,
 					'pageUrl'               => get_permalink(),
 					'beacon_enabled'        => (int) $this->beacon_enabled(),
 					'do_not_track'          => $this->get_option_int( 'enable_do_not_track' ),
 					'enable_turbo_mode'     => $this->get_option_int( 'enable_turbo_mode' ),
 					'track_url_change'      => $this->get_option_int( 'track_url_change' ),
+					'track_external_links'  => $this->get_option_int( 'track_external_links' ),
 					'cookie_retention_days' => apply_filters( 'burst_cookie_retention_days', 30 ),
-					'debug'                 => defined( 'BURST_DEBUG' ) && BURST_DEBUG ? 1 : 0,
+					'page_id'               => is_singular() ? (int) get_queried_object_id() : 0,
+					'debug'                 => defined( 'BURST_DEBUG' ) && \BURST_DEBUG ? 1 : 0,
 				],
 				'goals'    => [
 					'completed' => [],
@@ -673,6 +817,10 @@ class Tracking {
 			defined( 'BURST_INSTALL_TABLES_RUNNING' ) ||
 			defined( 'BURST_UNINSTALLING' )
 		) {
+			return [];
+		}
+
+		if ( ! $this->table_exists( 'burst_goals' ) ) {
 			return [];
 		}
 
@@ -743,9 +891,10 @@ class Tracking {
 	 * @param int    $goal_id The ID of the goal to check.
 	 * @param string $page_url The current page URL.
 	 * @param array  $goals the available goals.
+	 * @param int    $page_id Post ID of the tracked page, as sent in the hit payload. 0 if unknown.
 	 * @return bool Returns true if the goal is completed, false otherwise.
 	 */
-	public function goal_is_completed( int $goal_id, string $page_url, array $goals ): bool {
+	public function goal_is_completed( int $goal_id, string $page_url, array $goals, int $page_id = 0 ): bool {
 		$goal = array_filter(
 			$goals,
 			function ( $goal ) use ( $goal_id ) {
@@ -761,6 +910,13 @@ class Tracking {
 
 		switch ( $goal['type'] ) {
 			case 'visits':
+				// Match on the post ID of the tracked page. Runs on the tracking
+				// endpoints (REST and the SHORTINIT beacon), so there is no main
+				// query here — is_singular()/get_queried_object_id() are unusable
+				// and the beacon doesn't even load them.
+				if ( ! empty( $goal['page_id'] ) && $page_id > 0 && (int) $goal['page_id'] === $page_id ) {
+					return true;
+				}
 				// Improved URL comparison logic could go here.
 				// @TODO: Maybe add support for * and ? wildcards?.
 				if ( rtrim( $page_url, '/' ) === rtrim( $goal['url'], '/' ) ) {
@@ -780,9 +936,10 @@ class Tracking {
 	 *
 	 * @param array<int> $completed_client_goals Array of goal IDs completed on the client.
 	 * @param string     $page_url               Page URL used to verify server-side goal completion.
+	 * @param int        $page_id                Post ID of the tracked page, 0 if unknown.
 	 * @return array<int> List of completed goal IDs.
 	 */
-	public function get_completed_goals( array $completed_client_goals, string $page_url ): array {
+	public function get_completed_goals( array $completed_client_goals, string $page_url, int $page_id = 0 ): array {
 		$completed_server_goals = [];
 		$server_goals           = $this->get_active_goals( [ 'visits' ] );
 		// if server side goals exist.
@@ -790,7 +947,7 @@ class Tracking {
 			// loop through server side goals.
 			foreach ( $server_goals as $goal ) {
 				// if goal is completed.
-				if ( $this->goal_is_completed( $goal['ID'], $page_url, $server_goals ) ) {
+				if ( $this->goal_is_completed( $goal['ID'], $page_url, $server_goals, $page_id ) ) {
 					// add goal id to completed goals array.
 					$completed_server_goals[] = $goal['ID'];
 				}
@@ -826,39 +983,33 @@ class Tracking {
 		if ( $page_url !== '' ) {
 			$destructured_url = $this->sanitize_url( $page_url );
 			$parameters       = $destructured_url['parameters'];
-			$where            = ! empty( $parameters ) ? $wpdb->prepare( ' AND parameters = %s', $parameters ) : '';
+			$where            = ! empty( $parameters ) ? $wpdb->prepare( ' AND s.parameters = %s', $parameters ) : '';
 		}
 
-		$where .= $wpdb->prepare( ' AND time > %d', strtotime( '-30 minutes' ) );
-		// Build query based on whether we need session data.
-		if ( $need_session_data ) {
-			// With JOIN to get host.
-			$last_row = $wpdb->get_row(
-                // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where consists of only prepared parts.
-				$wpdb->prepare(
-					"SELECT 
-                    s.ID, 
-                    s.session_id, 
-                    s.parameters, 
-                    s.time_on_page, 
-                    s.bounce, 
-                    s.page_url,
-                    sess.host
-                FROM {$wpdb->prefix}burst_statistics s
-                LEFT JOIN {$wpdb->prefix}burst_sessions sess ON s.session_id = sess.ID
-                WHERE s.uid = %s {$where} 
-                ORDER BY s.ID DESC 
-                LIMIT 1",
-					$uid
-				)
-                // phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			);
-		} else {
-			$last_row = $wpdb->get_row(
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where consists of only prepared parts.
-				$wpdb->prepare( "SELECT ID, session_id, parameters, time_on_page, bounce, page_url FROM {$wpdb->prefix}burst_statistics WHERE uid = %s {$where} ORDER BY ID DESC LIMIT 1", $uid )
-			);
-		}
+		$where .= $wpdb->prepare( ' AND s.time > %d', strtotime( '-30 minutes' ) );
+
+		$host_select = $need_session_data ? ', sess.host' : '';
+
+		$last_row = $wpdb->get_row(
+			// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where and $host_select are from trusted prepared parts.
+			$wpdb->prepare(
+				"SELECT
+                s.ID,
+                s.session_id,
+                s.parameters,
+                s.time_on_page,
+                sess.bounce,
+                s.page_url
+                {$host_select}
+            FROM {$wpdb->prefix}burst_statistics s
+            LEFT JOIN {$wpdb->prefix}burst_sessions sess ON s.session_id = sess.ID
+            WHERE s.uid = %s {$where}
+            ORDER BY s.ID DESC
+            LIMIT 1",
+				$uid
+			)
+			// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		);
 
 		return $last_row ? (array) $last_row : [];
 	}
@@ -1045,8 +1196,26 @@ class Tracking {
 
 		// Check if session save path exists and is writable.
 		$save_path = session_save_path();
-        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable
-		if ( empty( $save_path ) || ! is_dir( $save_path ) || ! is_writable( $save_path ) ) {
+		$is_valid  = false;
+
+		// Non-file session handlers (redis, memcached, database, custom) don't
+		// use a filesystem path, so the directory checks below don't apply and
+		// the uploads fallback would break a working setup. Detect those either
+		// by the save handler or by a URL-style save path such as "redis://" or
+		// "tcp://host:port" and leave the configured session storage untouched.
+		$is_file_handler = 'files' === ini_get( 'session.save_handler' );
+		$is_url_path     = is_string( $save_path ) && preg_match( '~^[a-z][a-z0-9+.-]*://~i', $save_path );
+
+		if ( ! $is_file_handler || $is_url_path ) {
+			$is_valid = true;
+		} elseif ( ! empty( $save_path ) ) {
+			// Silence open_basedir warnings: outside the allowed paths these
+			// return false, which correctly triggers the uploads fallback below.
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- Suppressing potential open_basedir warnings for edge cases.
+			$is_valid = @is_dir( $save_path ) && @is_writable( $save_path );
+		}
+
+		if ( ! $is_valid ) {
 			// Load WordPress default constants manually.
 			require_once ABSPATH . WPINC . '/default-constants.php';
 			wp_plugin_directory_constants();

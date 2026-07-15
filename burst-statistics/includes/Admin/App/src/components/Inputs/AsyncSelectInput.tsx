@@ -2,6 +2,7 @@ import React, {useState, useEffect, forwardRef, useMemo} from 'react';
 import { useCombobox, useMultipleSelection } from 'downshift';
 import { debounce } from 'lodash';
 import { __ } from '@wordpress/i18n';
+import { clsx } from 'clsx';
 
 interface SelectOption {
 	value: any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -53,6 +54,9 @@ interface AsyncSelectInputProps {
 
 	/** Whether to allow creating custom options when no matches are found */
 	allowCustomValue?: boolean;
+
+	/** Additional classes for the container */
+	className?: string;
 }
 
 /**
@@ -62,6 +66,8 @@ interface AsyncSelectInputProps {
  * Uses Downshift's useCombobox and useMultipleSelection hooks for accessibility and keyboard navigation.
  */
 const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
+
+	// fallow-ignore-next-line complexity
 	(
 		{
 			value,
@@ -77,6 +83,7 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 			maxSelections = 1,
 			showRemoveButton = true,
 			allowCustomValue = true,
+			className,
 			...props
 		},
 		ref
@@ -128,6 +135,7 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 		}, [ defaultOptions, loadOptions ]);
 
 		// Convert value to array of selected items
+		// fallow-ignore-next-line complexity
 		const getSelectedItems = (): SelectOption[] => {
 			if ( ! value ) {
 				return [];
@@ -221,6 +229,7 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 			getDropdownProps
 		} = useMultipleSelection({
 			selectedItems: currentSelectedItems, // Use currentSelectedItems from props or state
+			// fallow-ignore-next-line complexity
 			onStateChange({ selectedItems: newSelectedItems, type }) {
 				switch ( type ) {
 					case useMultipleSelection.stateChangeTypes
@@ -278,6 +287,8 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 						return changes;
 				}
 			},
+
+			// fallow-ignore-next-line complexity
 			onStateChange({
 				type,
 				selectedItem: newSelectedItem,
@@ -318,6 +329,14 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 			itemToString: ( item ) => ( item ? item.label : '' )
 		});
 
+		// Sync inputValue with selected item for single selection
+		useEffect( () => {
+			if ( 1 === maxSelections && ! isOpen ) {
+				const selected = currentSelectedItems[0];
+				setInputValue( selected ? selected.label : '' );
+			}
+		}, [ value, items, maxSelections, isOpen ]); // eslint-disable-line react-hooks/exhaustive-deps
+
 		const handleRemoveItem = ( itemToRemove: SelectOption ) => {
 			const newSelectedItems = currentSelectedItems.filter(
 				( item ) => item.value !== itemToRemove.value
@@ -348,23 +367,26 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 		};
 
 		return (
-			<>
+			<div className={clsx( 'relative w-full', className )}>
 				{/* Combobox container with integrated selected items */}
 				<div
 					{...getComboboxProps()}
-					className="flex min-h-[2.5rem] w-full rounded-md border border-gray-400 bg-white focus-within:border-primary-dark focus-within:ring disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-200"
+					className={clsx(
+						'flex min-h-[2.5rem] w-full rounded-md border border-gray-400 bg-white focus-within:border-primary-700 focus-within:ring-1 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-200',
+						disabled && 'border-gray-200 bg-gray-200'
+					)}
 				>
 					{/* Container for selected items and input */}
 					<div className="flex flex-1 flex-wrap items-center gap-1 p-1">
 						{/* Selected items (tags) */}
-						{currentSelectedItems.map( ( selectedItem, index ) => (
+						{1 < maxSelections && currentSelectedItems.map( ( selectedItem, index ) => (
 							<span
 								key={`selected-item-${index}`}
 								{...getSelectedItemProps({
 									selectedItem,
 									index
 								})}
-								className="inline-flex items-center gap-1 rounded bg-primary-light px-2 py-1 text-base text-primary-dark focus:bg-primary focus:text-white focus:outline-none"
+								className="inline-flex items-center gap-1 rounded bg-primary-100 px-2 py-1 text-base text-primary-700 focus:bg-primary focus:text-text-white focus:outline-hidden"
 							>
 								{selectedItem.label}
 								{showRemoveButton && (
@@ -374,7 +396,7 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 											e.stopPropagation();
 											handleRemoveItem( selectedItem );
 										}}
-										className="ml-1 rounded-full hover:bg-primary hover:text-white focus:bg-primary focus:text-white focus:outline-none"
+										className="ml-1 rounded-full hover:bg-primary hover:text-text-white focus:bg-primary focus:text-text-white focus:outline-hidden"
 										aria-label={`Remove ${selectedItem.label}`}
 									>
 										<svg
@@ -414,7 +436,7 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 										...props
 									})
 								)}
-								className="flex-1 min-w-[120px] border-none bg-transparent p-1 focus:outline-none disabled:cursor-not-allowed"
+								className="flex-1 min-w-[120px] border-none bg-transparent p-1 focus:outline-hidden disabled:cursor-not-allowed"
 								style={{ outline: 'none' }}
 							/>
 						)}
@@ -423,8 +445,8 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 					{/* Selection counter and toggle button */}
 					<div className="flex items-center border-l border-gray-300">
 						{/* Max selections indicator */}
-						{0 < maxSelections && (
-							<span className="px-2 text-xs text-gray-500 border-r border-gray-200">
+						{1 < maxSelections && (
+							<span className="px-2 text-xs text-text-gray-light border-r border-gray-200">
 								{currentSelectedItems.length}/{maxSelections}
 							</span>
 						)}
@@ -435,7 +457,7 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 							{...getToggleButtonProps({
 								disabled
 							})}
-							className="flex items-center justify-center bg-transparent px-2 py-2 hover:bg-gray-100 focus:border-primary-dark focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-200"
+							className="flex items-center justify-center bg-transparent px-2 py-2 hover:bg-gray-100 focus:border-primary-700 focus:outline-hidden disabled:cursor-not-allowed disabled:bg-gray-200"
 							aria-label="Toggle menu"
 						>
 							{loading ? (
@@ -462,10 +484,14 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 				{/* Menu */}
 				<div
 					{...getMenuProps()}
-					className={`w-full ${insideModal ? 'fixed' : ''} ${! isOpen ? 'hidden' : ''}`}
+					className={clsx(
+						'absolute left-0 z-9999 mt-1 w-full',
+						insideModal && 'fixed',
+						! isOpen && 'hidden'
+					)}
 				>
 					<ul
-						className={`relative top-0 z-[9999] max-h-60 overflow-y-auto w-full rounded-md border border-gray-300 bg-white shadow-lg ${
+						className={`relative top-0 z-9999 max-h-60 overflow-y-auto w-full rounded-md border border-gray-300 bg-white shadow-lg ${
 							! ( isOpen && availableItems.length ) ? 'hidden' : ''
 						}`}
 					>
@@ -475,7 +501,7 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 								{...getItemProps({ item, index })}
 								className={`cursor-pointer px-3 py-2 text-base first:rounded-t-md last:rounded-b-md ${
 									highlightedIndex === index ?
-										'bg-primary-light text-primary-dark' :
+										'bg-primary-300 text-primary-700' :
 										'hover:bg-gray-100'
 								}`}
 							>
@@ -503,7 +529,7 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 							</li>
 						) )}
 						{0 === availableItems.length && ! loading && (
-							<li className="px-3 py-2 text-sm text-gray-500">
+							<li className="px-3 py-2 text-sm text-text-gray-light">
 								{currentSelectedItems.length >= maxSelections ?
 									`Maximum ${maxSelections} selection${1 < maxSelections ? 's' : ''} reached` :
 									'No options found'}
@@ -511,7 +537,7 @@ const AsyncSelectInput = forwardRef<HTMLInputElement, AsyncSelectInputProps>(
 						)}
 					</ul>
 				</div>
-			</>
+			</div>
 		);
 	}
 );
